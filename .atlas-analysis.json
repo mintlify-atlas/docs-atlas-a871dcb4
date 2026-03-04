@@ -1,0 +1,85 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "JRE Notion Workers",
+  "projectDescription": "TypeScript SDK providing three Notion Workers for agent coordination, governance compliance, and machine-to-machine communication in an 11-agent automation system.",
+  "theme": "aspen",
+  "primaryColor": "#2E7D32",
+  "lightColor": "#66BB6A",
+  "darkColor": "#1B5E20",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/workers",
+              "concepts/agent-system"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/setup",
+              "guides/deployment",
+              "guides/testing",
+              "guides/development"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Workers",
+            "pages": [
+              "api/write-agent-digest",
+              "api/check-upstream-status",
+              "api/create-handoff-marker"
+            ]
+          },
+          {
+            "group": "Shared Modules",
+            "pages": [
+              "api/types",
+              "api/agent-config",
+              "api/status-parser",
+              "api/date-utils",
+              "api/block-builder"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Three Notion Worker tools for agent automation",
+    "Governance-compliant digest page creation",
+    "Upstream status checking and dependency tracking",
+    "Agent-to-agent handoff coordination with circuit breakers",
+    "Type-safe TypeScript API with comprehensive validation",
+    "Built for Node.js 22+ runtime with Bun development support"
+  ],
+  "publicApiSurface": [
+    "write-agent-digest",
+    "check-upstream-status",
+    "create-handoff-marker",
+    "WriteAgentDigestInput",
+    "WriteAgentDigestOutput",
+    "CheckUpstreamStatusInput",
+    "CheckUpstreamStatusOutput",
+    "CreateHandoffMarkerInput",
+    "CreateHandoffMarkerOutput"
+  ]
+}
