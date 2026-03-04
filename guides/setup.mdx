@@ -1,0 +1,347 @@
+---
+title: 'Setup Guide'
+description: 'Complete setup instructions for JRE Notion Workers with multiple credential options'
+icon: 'gear'
+---
+
+## Prerequisites
+
+Before setting up JRE Notion Workers, ensure you have:
+
+- **Node.js** ≥ 22 (deployment target)
+- **Bun** ≥ 1.1 (recommended for local development)
+- **ntn** CLI for deployment ([makenotion/workers-template](https://github.com/makenotion/workers-template))
+- Access to a Notion workspace with integration permissions
+
+## Installation
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the jre-notion-workers repository to your local machine:
+    
+    ```bash
+    git clone <repository-url>
+    cd jre-notion-workers
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Install project dependencies using Bun or npm:
+    
+    <Tabs>
+      <Tab title="Bun (Recommended)">
+        ```bash
+        bun install
+        ```
+      </Tab>
+      <Tab title="npm">
+        ```bash
+        npm install
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Configure credentials">
+    Choose one of the credential setup options below based on your workflow.
+  </Step>
+</Steps>
+
+## Credential Setup Options
+
+JRE Notion Workers supports multiple ways to manage credentials. Choose the option that best fits your workflow:
+
+<Tabs>
+  <Tab title="1Password CLI (Recommended)">
+    ### Option A: 1Password CLI
+    
+    For maintainers with access to the shared 1Password vault, use the automated script to generate `.env` from the "JRE Notion Workers - API Credentials" item.
+    
+    **Requirements:**
+    - 1Password CLI installed and authenticated
+    - Access to the Dev vault
+    
+    **Setup:**
+    
+    Run the load-secrets script once to generate `.env`:
+    
+    ```bash
+    bash scripts/load-secrets.sh
+    ```
+    
+    This will:
+    1. Connect to 1Password (vault: "Dev")
+    2. Fetch credentials from the "JRE Notion Workers - API Credentials" item
+    3. Write a local `.env` file with all required variables
+    
+    **Custom vault:**
+    
+    If your 1Password item is in a different vault:
+    
+    ```bash
+    OP_VAULT="YourVault" bash scripts/load-secrets.sh
+    ```
+    
+    <Note>
+      The generated `.env` file is gitignored and should never be committed.
+    </Note>
+  </Tab>
+
+  <Tab title="1Password Cursor Hooks">
+    ### Option A1: 1Password Cursor Hooks
+    
+    For Cursor users, this project supports [1Password Cursor Hooks](https://developer.1password.com/docs/cursor-hooks/) — credentials are mounted on-demand with no plaintext secrets on disk.
+    
+    **How it works:**
+    
+    Before the Cursor Agent runs any shell command, a validation hook checks that required `.env` files from 1Password Environments are mounted and valid.
+    
+    **Requirements:**
+    
+    - [1Password](https://1password.com) (Mac or Linux)
+    - [Cursor](https://cursor.com)
+    - `sqlite3` in PATH
+    
+    **Setup steps:**
+    
+    <Steps>
+      <Step title="Create a 1Password Environment">
+        In the 1Password app:
+        1. Create an Environment (e.g. "Notion Workers")
+        2. Add a **Mount .env file** destination
+        3. Point it to `<project-path>/.env.local` (or `.env`)
+        4. Add the required environment variables (see below)
+        
+        See [Locally mounted .env files](https://developer.1password.com/docs/environments/local-env-file) for detailed instructions.
+      </Step>
+      
+      <Step title="Enable the mount">
+        In 1Password:
+        1. Go to Destinations → your local .env file
+        2. Toggle **Enabled**
+        3. Restart Cursor
+      </Step>
+      
+      <Step title="Verify hook is active">
+        This repository already includes:
+        - `.cursor/hooks.json` — Runs validation before shell execution
+        - `.cursor/hooks/1password/validate-mounted-env-files.sh` — Validation script
+        - `.1password/environments.toml` — Lists paths to validate
+        
+        When the Agent runs a command, the hook will allow it only if the mounted `.env` is present and valid.
+      </Step>
+    </Steps>
+    
+    **Troubleshooting:**
+    
+    <Accordion title="Hook keeps blocking commands">
+      **Open Cursor with the correct workspace root:**
+      
+      The hook resolves `.env.local` relative to the workspace root Cursor sends. Ensure you:
+      
+      1. Open Cursor with **this project folder** as workspace root:
+         - File → Open Folder → `jre-notion-workers`
+         - NOT a parent folder containing multiple projects
+      
+      2. Check the logs to see why it denied:
+         ```bash
+         cat /tmp/1password-cursor-hooks.log
+         ```
+         
+      Look for:
+      - "Required local .env file is missing or invalid"
+      - "not found in 1Password database"
+      
+      The path shown must match the mount path in 1Password exactly.
+    </Accordion>
+    
+    <Accordion title="Enable debug logging">
+      Set `DEBUG=1` when running commands to see verbose hook output:
+      
+      ```bash
+      DEBUG=1 bun run dev:local
+      ```
+      
+      Logs are written to `/tmp/1password-cursor-hooks.log`.
+    </Accordion>
+  </Tab>
+
+  <Tab title="1Password op run">
+    ### Option A2: 1Password CLI with op run
+    
+    For terminal use without Cursor, use `.env.1p` with secret references and run commands via `op run`.
+    
+    **Setup:**
+    
+    1. Ensure `.env.1p` contains secret references:
+       ```bash
+       NOTION_TOKEN=op://vault/item/field
+       DOCS_DATABASE_ID=op://vault/item/field
+       # etc.
+       ```
+    
+    2. Run commands with `op run`:
+       ```bash
+       bun run dev:1p
+       bun run test:connection:1p
+       ```
+    
+    See [Load secrets into the environment](https://developer.1password.com/docs/cli/secrets-environment-variables) for more details.
+  </Tab>
+
+  <Tab title="Manual .env">
+    ### Option B: Manual Configuration
+    
+    For contributors without 1Password access, manually create a `.env` file.
+    
+    **Setup:**
+    
+    <Steps>
+      <Step title="Copy the example file">
+        ```bash
+        cp .env.example .env
+        ```
+      </Step>
+      
+      <Step title="Edit .env with your values">
+        Open `.env` in your editor and fill in the required variables:
+        
+        ```bash
+        # Production credentials
+        NOTION_TOKEN=secret_...
+        DOCS_DATABASE_ID=32charhexid
+        HOME_DOCS_DATABASE_ID=32charhexid
+        TASKS_DATABASE_ID=32charhexid
+        
+        # Testing (optional, for integration tests)
+        TEST_NOTION_TOKEN=secret_...
+        TEST_DOCS_DATABASE_ID=32charhexid
+        ```
+      </Step>
+    </Steps>
+    
+    <Warning>
+      Never commit `.env` — it is gitignored and contains sensitive credentials.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Environment Variables
+
+Here's what each environment variable does and where to get its value:
+
+| Variable | Purpose | Where to get it |
+|----------|---------|----------------|
+| `NOTION_TOKEN` | Notion integration token for API access | Create an integration at [notion.so/my-integrations](https://www.notion.so/my-integrations) and copy the Internal Integration Token |
+| `DOCS_DATABASE_ID` | Target database for agent digests (Docs) | Open the database in Notion → Copy link → Extract the 32-character hex ID from the URL |
+| `HOME_DOCS_DATABASE_ID` | Target database for personal digests (Home Docs) | Same as above, for your Home Docs database |
+| `TASKS_DATABASE_ID` | Database for handoff tasks | Same as above, for your Tasks database |
+| `TEST_NOTION_TOKEN` | Integration token for test database (optional) | Create a separate integration for testing |
+| `TEST_DOCS_DATABASE_ID` | Test database ID (optional) | Use a dedicated test database, NOT production |
+
+<Note>
+  **Notion IDs:** Database IDs are 32-character hexadecimal strings with no dashes. When copying from a Notion URL, extract only the hex portion before any query parameters.
+</Note>
+
+## Using .env.local
+
+If you keep credentials in `.env.local` (e.g. mounted from 1Password), that file is also gitignored.
+
+**Run with .env.local:**
+
+```bash
+bun run dev:local
+```
+
+For one-off scripts or tests:
+
+```bash
+bun run --env-file=.env.local test
+```
+
+## Test Your Connection
+
+After setting up credentials, verify connectivity to Notion:
+
+<Tabs>
+  <Tab title="With .env or .env.local">
+    ```bash
+    bun run test:connection
+    ```
+  </Tab>
+  
+  <Tab title="With 1Password op run">
+    ```bash
+    bun run test:connection:1p
+    ```
+  </Tab>
+</Tabs>
+
+The connection test will:
+- Verify `NOTION_TOKEN` is valid
+- Check access to each configured database
+- Report any configuration issues
+
+## Troubleshooting
+
+<Accordion title="Error: NOTION_TOKEN is required">
+  **Cause:** Environment variables are not being loaded.
+  
+  **Solutions:**
+  1. Verify `.env` or `.env.local` exists in the project root
+  2. Check file permissions: `chmod 600 .env`
+  3. If using 1Password Cursor Hooks, ensure the mount is enabled and Cursor is restarted
+  4. If using `op run`, verify 1Password CLI is authenticated: `op signin`
+</Accordion>
+
+<Accordion title="Error: unauthorized">
+  **Cause:** Notion integration token is invalid or the integration doesn't have access to the databases.
+  
+  **Solutions:**
+  1. Verify `NOTION_TOKEN` is a valid Internal Integration Token
+  2. In Notion, share each database with your integration:
+     - Open the database
+     - Click "..." menu → Add connections → Select your integration
+  3. Regenerate the token if it was revoked
+</Accordion>
+
+<Accordion title="Error: object_not_found">
+  **Cause:** Database ID is incorrect or the integration doesn't have access.
+  
+  **Solutions:**
+  1. Verify database IDs are correct 32-character hex strings
+  2. Ensure the integration has been added to each database (see "unauthorized" above)
+  3. Check you're not using page IDs instead of database IDs
+</Accordion>
+
+<Accordion title="1Password hook blocks all commands">
+  See the troubleshooting section in the "1Password Cursor Hooks" tab above.
+</Accordion>
+
+## Security Best Practices
+
+<Warning>
+  - Never commit `.env`, `.env.local`, or any file containing real credentials
+  - Never log or expose `NOTION_TOKEN` in console output or error messages
+  - Use separate test credentials and databases — never test against production
+  - Rotate tokens if accidentally exposed
+</Warning>
+
+**Safe to commit:**
+- `.env.example` (template with no real values)
+- `scripts/load-secrets.sh` (contains no secrets)
+- `.env.1p` (secret references only)
+- `.cursor/hooks.json` and `.cursor/hooks/1password/`
+- `.1password/environments.toml`
+
+All `.env*` files except `.env.example` and `.env.1p` are in `.gitignore`.
+
+## Next Steps
+
+Once setup is complete:
+
+1. Run the test suite: `bun test`
+2. Start local development: `bun run dev`
+3. Review the [Development Guide](/guides/development) for coding standards
+4. See [Testing Guide](/guides/testing) for test patterns
+5. Check [Deployment Guide](/guides/deployment) when ready to deploy

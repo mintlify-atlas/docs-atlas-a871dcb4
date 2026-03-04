@@ -1,0 +1,231 @@
+---
+title: Installation
+description: Set up your development environment and configure credentials for JRE Notion Workers
+---
+
+# Installation
+
+This guide covers installing JRE Notion Workers, setting up your development environment, and configuring credentials.
+
+## Prerequisites
+
+Before you begin, ensure you have the following installed:
+
+- **Node.js** ≥ 22 (production deploy target)
+- **Bun** ≥ 1.1 (recommended for local development)
+- **ntn CLI** for deployment ([makenotion/workers-template](https://github.com/makenotion/workers-template))
+
+<Note>
+  Bun provides native TypeScript support and faster execution for local development, but the workers deploy to Node.js 22 in production via the `ntn` CLI.
+</Note>
+
+## Install Dependencies
+
+Clone the repository and install dependencies:
+
+<CodeGroup>
+```bash Bun (recommended)
+bun install
+```
+
+```bash npm
+npm install
+```
+</CodeGroup>
+
+## Environment Configuration
+
+JRE Notion Workers requires four environment variables to connect to your Notion workspace. You have three options for managing these credentials:
+
+### Required Environment Variables
+
+All configuration options require these four variables:
+
+| Variable | Purpose |
+|----------|--------|
+| `NOTION_TOKEN` | Notion integration token |
+| `DOCS_DATABASE_ID` | Docs database ID (32-char hex, no dashes) |
+| `HOME_DOCS_DATABASE_ID` | Home Docs database ID |
+| `TASKS_DATABASE_ID` | Tasks database ID (for handoff tasks) |
+
+<Warning>
+  For integration tests, you'll also need `TEST_NOTION_TOKEN` and `TEST_DOCS_DATABASE_ID`. **Never use production database IDs for testing** — create a dedicated test database.
+</Warning>
+
+### Option A: 1Password (Maintainers)
+
+If you're a maintainer with access to the "Notion Workers" 1Password item, generate your `.env` file automatically:
+
+<Steps>
+  <Step title="Run the secrets script">
+    ```bash
+    bash scripts/load-secrets.sh
+    ```
+    
+    This reads the "Notion Workers" 1Password item and creates a `.env` file with all required variables.
+  </Step>
+  
+  <Step title="Verify credentials">
+    Test your connection to ensure credentials are configured correctly:
+    
+    ```bash
+    bun run test:connection
+    ```
+  </Step>
+</Steps>
+
+### Option A1: 1Password + Cursor Hooks
+
+This project supports [1Password Cursor Hooks](https://developer.1password.com/docs/cursor-hooks/) for secret-free development. Before the Cursor Agent runs any shell command, a hook validates that required `.env` files from [1Password Environments](https://developer.1password.com/docs/environments) are mounted and valid — no plaintext secrets on disk.
+
+<Steps>
+  <Step title="Requirements">
+    - [1Password](https://1password.com) (Mac or Linux)
+    - [Cursor](https://cursor.com)
+    - `sqlite3` in PATH
+  </Step>
+  
+  <Step title="Create 1Password Environment">
+    In 1Password, create an Environment (e.g., "Notion Workers") and add a **Mount .env file** destination pointing to this project's `.env.local` (or `.env`).
+    
+    Add these variables to the Environment:
+    - `NOTION_TOKEN`
+    - `DOCS_DATABASE_ID`
+    - `HOME_DOCS_DATABASE_ID`
+    - `TASKS_DATABASE_ID`
+    
+    See [Locally mounted .env files](https://developer.1password.com/docs/environments/local-env-file) for details.
+  </Step>
+  
+  <Step title="Enable the mount">
+    In the 1Password app:
+    1. Navigate to Destinations → your local .env file
+    2. Toggle **Enabled**
+    3. Restart Cursor
+    
+    When the Cursor Agent runs a command, the hook will validate the mounted `.env` before allowing execution.
+  </Step>
+  
+  <Step title="Verify setup">
+    The repository already includes:
+    - `.cursor/hooks.json` (runs validation script before shell execution)
+    - `.cursor/hooks/1password/validate-mounted-env-files.sh` (from [1Password/cursor-hooks](https://github.com/1Password/cursor-hooks))
+    - `.1password/environments.toml` (lists `.env.local` and `.env` for validation)
+    
+    Logs are written to `/tmp/1password-cursor-hooks.log`. Set `DEBUG=1` to enable debug logging.
+  </Step>
+</Steps>
+
+<Note>
+  **Troubleshooting:** If the hook keeps blocking, ensure Cursor is opened with **this project folder** as the workspace root (File → Open Folder → `jre-notion-workers`), not a parent folder. The hook resolves `.env.local` relative to the workspace root. Check `/tmp/1password-cursor-hooks.log` for details.
+</Note>
+
+### Option A2: 1Password CLI (`op run`)
+
+For terminal use without Cursor, use `.env.1p` (secret references) with the 1Password CLI:
+
+```bash
+# Development server
+bun run dev:1p
+
+# Connection test
+bun run test:connection:1p
+
+# Tests
+bun run test:1p
+```
+
+See [Load secrets into the environment](https://developer.1password.com/docs/cli/secrets-environment-variables) for more on `op run`.
+
+### Option B: Manual Configuration
+
+Copy the example file and fill in your values manually:
+
+<Steps>
+  <Step title="Copy the example file">
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+  
+  <Step title="Edit .env with your credentials">
+    Open `.env` in your editor and add your Notion integration token and database IDs:
+    
+    ```bash .env
+    # Production credentials
+    NOTION_TOKEN=secret_abc123...
+    DOCS_DATABASE_ID=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+    HOME_DOCS_DATABASE_ID=p6o5n4m3l2k1j0i9h8g7f6e5d4c3b2a1
+    TASKS_DATABASE_ID=x1y2z3a4b5c6d7e8f9g0h1i2j3k4l5m6
+    
+    # Testing (integration tests only — never use production values here)
+    TEST_NOTION_TOKEN=
+    TEST_DOCS_DATABASE_ID=
+    ```
+  </Step>
+  
+  <Step title="Verify credentials">
+    ```bash
+    bun run test:connection
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Never commit `.env` or `.env.local` — they are in `.gitignore`. Safe to commit: `.env.example`, `scripts/load-secrets.sh`, `.env.1p`, `.cursor/hooks.json`, `.cursor/hooks/1password/`, and `.1password/environments.toml`.
+</Warning>
+
+### Using .env.local
+
+If you keep credentials in `.env.local` (e.g., exported from 1Password), that file is gitignored. Run development commands with:
+
+```bash
+bun run dev:local
+```
+
+For one-off scripts or tests:
+
+```bash
+bun run --env-file=.env.local your-script.ts
+```
+
+## Deployed Workers (Production)
+
+For production deployment, set secrets via the `ntn` CLI:
+
+```bash
+ntn workers secrets set NOTION_TOKEN=secret_abc123...
+ntn workers secrets set DOCS_DATABASE_ID=a1b2c3d4...
+ntn workers secrets set HOME_DOCS_DATABASE_ID=p6o5n4m3...
+ntn workers secrets set TASKS_DATABASE_ID=x1y2z3a4...
+```
+
+Secrets are available as `process.env` variables at runtime.
+
+## Verify Installation
+
+Run the connection test to verify your setup:
+
+<CodeGroup>
+```bash Default
+bun run test:connection
+```
+
+```bash 1Password CLI
+bun run test:connection:1p
+```
+
+```bash .env.local
+bun run --env-file=.env.local scripts/test-connection.ts
+```
+</CodeGroup>
+
+If successful, you'll see confirmation that the Notion client connected and found your databases.
+
+## Next Steps
+
+With installation complete, you're ready to run your first worker:
+
+<Card title="Quick Start" icon="rocket" href="/quickstart">
+  Follow the quick start guide to invoke your first worker and see real examples
+</Card>

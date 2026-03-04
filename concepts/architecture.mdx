@@ -1,0 +1,265 @@
+---
+title: Architecture & Design
+description: System design, module boundaries, and data flow for JRE Notion Workers
+---
+
+## Overview
+
+The JRE Notion Workers system follows a layered architecture with clear separation of concerns. Each layer has a single responsibility, making the codebase maintainable, testable, and reliable.
+
+## Core Design Principles
+
+The architecture is built on five fundamental principles:
+
+<CardGroup cols={2}>
+  <Card title="Single Responsibility" icon="bullseye">
+    One worker (tool) does one thing. Each worker has a focused purpose and doesn't try to solve multiple problems.
+  </Card>
+  
+  <Card title="Pure Logic at the Core" icon="flask">
+    Parsing, formatting, and validation are I/O-free and unit-testable. Business logic is isolated from side effects.
+  </Card>
+  
+  <Card title="Thin I/O Shell" icon="layer-group">
+    Notion API calls are in worker `execute` functions or shared helpers that take a client. I/O is pushed to the edges.
+  </Card>
+  
+  <Card title="Typed Contracts" icon="file-contract">
+    Every worker has explicit `*Input` and `*Output` types in `src/shared/types.ts`. No implicit contracts.
+  </Card>
+  
+  <Card title="Fail Fast" icon="circle-exclamation">
+    Validate all inputs at the start of `execute`. Return `{ success: false, error }` instead of throwing exceptions.
+  </Card>
+</CardGroup>
+
+## Layered Structure
+
+The system is organized into four distinct layers, each with clear responsibilities:
+
+```
+┌─────────────────────────────────────────┐
+│  Entry (src/index.ts)                    │
+│  Registers tools with Worker, schemas,   │
+│  and execute → worker.execute(input, ctx)│
+└─────────────────────────────────────────┘
+                    │
+┌─────────────────────────────────────────┐
+│  Workers (src/workers/*.ts)             │
+│  Validate input, call shared logic,     │
+│  call Notion via passed client, return  │
+└─────────────────────────────────────────┘
+                    │
+┌─────────────────────────────────────────┐
+│  Shared (src/shared/*.ts)               │
+│  Pure: status-parser, date-utils,        │
+│  agent-config, block-builder.            │
+│  I/O: notion-client (env + Client)      │
+└─────────────────────────────────────────┘
+                    │
+┌─────────────────────────────────────────┐
+│  Types (src/shared/types.ts)            │
+│  Input/output interfaces, no logic      │
+└─────────────────────────────────────────┘
+```
+
+### Layer 1: Entry Point
+
+The entry point (`src/index.ts`) registers all workers with the Notion Workers runtime. It defines:
+
+- Tool names and JSON schemas
+- Execute handlers that delegate to worker implementations
+- Context passing (including the Notion client)
+
+### Layer 2: Workers
+
+Worker files in `src/workers/` are orchestrators. They:
+
+1. Validate input against allowed values (e.g., `VALID_AGENT_NAMES`)
+2. Call shared logic modules for transformations
+3. Perform Notion API reads/writes via the client
+4. Return typed output objects
+
+**Workers never contain business logic** - they coordinate.
+
+### Layer 3: Shared Modules
+
+The `src/shared/` directory contains two types of modules:
+
+**Pure modules** (no I/O, fully testable):
+- `status-parser.ts` - Parse machine-readable status lines
+- `date-utils.ts` - Date formatting and age calculations
+- `agent-config.ts` - Agent name mappings and validation
+- `block-builder.ts` - Construct Notion block structures
+
+**I/O modules**:
+- `notion-client.ts` - Environment variable reading and Notion client initialization
+
+### Layer 4: Types
+
+`src/shared/types.ts` contains all TypeScript interfaces for inputs and outputs. Zero implementation logic - just contracts.
+
+## Data Flow
+
+Data flows unidirectionally through the system:
+
+<Steps>
+  <Step title="Input">
+    Caller sends JSON matching the tool schema (e.g., `agent_name`, `status_type`, etc.)
+  </Step>
+  
+  <Step title="Validation">
+    Worker checks required fields and allowed values (e.g., `VALID_AGENT_NAMES`) and returns an error object if invalid
+  </Step>
+  
+  <Step title="Notion Read">
+    Where needed (e.g., check-upstream-status, create-handoff-marker), worker queries databases or blocks via the Notion client
+  </Step>
+  
+  <Step title="Pure Logic">
+    Shared modules parse status lines, build titles, build blocks, compute dates - all without I/O
+  </Step>
+  
+  <Step title="Notion Write">
+    Worker creates or updates pages/blocks (write-agent-digest, create-handoff-marker)
+  </Step>
+  
+  <Step title="Output">
+    Worker returns a typed object (e.g., `{ success, page_id?, page_url?, error? }`)
+  </Step>
+</Steps>
+
+**Key insight:** Data flows one way: `input → validate → read (if needed) → transform (shared) → write (if needed) → output`.
+
+No backwards flow, no circular dependencies, no hidden state mutations.
+
+## Worker Responsibilities
+
+Each worker has a clear scope of what it reads and writes:
+
+| Worker                  | Reads from Notion      | Writes to Notion        | Shared modules used                    |
+|-------------------------|------------------------|-------------------------|----------------------------------------|
+| write-agent-digest      | —                      | Docs or Home Docs       | agent-config, status-parser, date-utils, block-builder |
+| check-upstream-status   | Docs, Home Docs        | —                       | agent-config, status-parser, date-utils |
+| create-handoff-marker   | Docs (optional)        | Tasks (optional), none  | agent-config, date-utils               |
+
+<Note>
+  Workers that write are designed to be atomic: one call = one well-defined operation. Workers that read are stateless and can be called repeatedly.
+</Note>
+
+## Idempotency and Guards
+
+Idempotency is critical for reliable automation:
+
+### write-agent-digest
+
+Creates **one page per call**. Idempotency is the **caller's responsibility** - each agent should call this once per run. The worker itself does not check for duplicate digests.
+
+### check-upstream-status
+
+**Read-only and fully idempotent**. Same input always produces the same output (assuming the underlying Notion data hasn't changed).
+
+### create-handoff-marker
+
+Enforces two idempotency mechanisms:
+
+1. **Circuit breaker**: Prevents the same `source → target` handoff within 7 days
+2. **Re-escalation cap**: Maximum of 2 escalations in the same direction within 7 days
+
+After hitting the cap, `needs_manual_review` is set and no new handoff tasks are created.
+
+## Error Handling
+
+All workers follow a consistent error handling pattern:
+
+### Validation Errors
+
+Return structured error objects immediately:
+
+```typescript
+return {
+  success: false,
+  error: "agent_name must be one of: inbox-manager, github-insyncerator, ..."
+};
+```
+
+### Notion API Errors
+
+Catch exceptions and convert to structured errors:
+
+```typescript
+try {
+  const response = await notion.pages.create({...});
+  return { success: true, page_id: response.id };
+} catch (err) {
+  return {
+    success: false,
+    error: `Failed to create page: ${err.message}`
+  };
+}
+```
+
+<Warning>
+  **Never throw exceptions to the caller.** All failure paths must return structured error objects. No silent failures - every error is explicit and actionable.
+</Warning>
+
+## Dependencies
+
+The system relies on three core dependencies:
+
+<CardGroup cols={3}>
+  <Card title="@notionhq/client" icon="n">
+    Official Notion API client for all database and page operations
+  </Card>
+  
+  <Card title="@notionhq/workers" icon="screwdriver-wrench">
+    Worker runtime and registration system (`Worker`, `.tool()`)
+  </Card>
+  
+  <Card title="date-fns" icon="calendar">
+    Date formatting and parsing for Chicago timezone and age checks
+  </Card>
+</CardGroup>
+
+### Configuration Management
+
+All configuration comes from `process.env` via `src/shared/notion-client.ts`:
+
+- `NOTION_TOKEN` - Integration authentication
+- `DOCS_DATABASE_ID` - Target for most agent digests
+- `HOME_DOCS_DATABASE_ID` - Target for personal digests
+- `TASKS_DATABASE_ID` - Target for handoff tasks
+
+**No hardcoded values. No configuration files. Environment only.**
+
+## Design Trade-offs
+
+### Why Thin Workers?
+
+Keeping workers thin (orchestration only) means:
+
+- Business logic can be tested in isolation
+- Mocking the Notion API is only needed for integration tests
+- Multiple workers can share the same logic (DRY principle)
+
+### Why Typed Contracts?
+
+Explicit input/output types mean:
+
+- Breaking changes are caught at compile time
+- Documentation is always in sync with implementation
+- Callers (agents) have clear contracts to program against
+
+### Why Fail Fast?
+
+Returning structured errors instead of throwing means:
+
+- Callers can handle errors programmatically
+- No uncaught exceptions crash the worker
+- Every failure includes context (which validation failed, which API call failed)
+
+---
+
+<Card title="Next: Notion Workers Platform" icon="arrow-right" href="/concepts/workers">
+  Learn about the Notion Workers runtime and platform-specific design rules
+</Card>

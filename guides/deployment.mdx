@@ -1,0 +1,466 @@
+---
+title: 'Deployment Guide'
+description: 'Deploy JRE Notion Workers to Notion infrastructure using the ntn CLI'
+icon: 'rocket'
+---
+
+## Overview
+
+JRE Notion Workers are deployed to Notion's infrastructure using the `ntn` CLI. Workers run on Node.js ≥22 in a Notion-controlled runtime — you do not manage servers.
+
+<Note>
+  **Alpha status:** `@notionhq/workers` is in alpha. APIs and deployment behavior may change. Check [makenotion/workers-template](https://github.com/makenotion/workers-template) for the latest.
+</Note>
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install ntn CLI">
+    Install the Notion Workers CLI from [makenotion/workers-template](https://github.com/makenotion/workers-template):
+    
+    ```bash
+    npm install -g @notionhq/workers-cli
+    # or follow the installation instructions in the template repo
+    ```
+  </Step>
+  
+  <Step title="Authenticate ntn">
+    Authenticate with your Notion workspace:
+    
+    ```bash
+    ntn auth login
+    ```
+  </Step>
+  
+  <Step title="Verify local tests pass">
+    Before deploying, ensure all tests pass:
+    
+    ```bash
+    bun test
+    npm run check
+    ```
+  </Step>
+</Steps>
+
+## Setting Deployment Secrets
+
+Workers read credentials from `process.env`. You must set secrets via the `ntn` CLI before deployment.
+
+### Required Secrets
+
+<Steps>
+  <Step title="Set NOTION_TOKEN">
+    ```bash
+    ntn workers secrets set NOTION_TOKEN=secret_...
+    ```
+    
+    This is your Notion integration token. Create one at [notion.so/my-integrations](https://www.notion.so/my-integrations).
+  </Step>
+  
+  <Step title="Set database IDs">
+    ```bash
+    ntn workers secrets set DOCS_DATABASE_ID=<32-char-hex-id>
+    ntn workers secrets set HOME_DOCS_DATABASE_ID=<32-char-hex-id>
+    ntn workers secrets set TASKS_DATABASE_ID=<32-char-hex-id>
+    ```
+    
+    Use the 32-character hex IDs from your Notion databases (no dashes).
+  </Step>
+</Steps>
+
+### Verify Secrets
+
+List configured secrets (values are hidden):
+
+```bash
+ntn workers secrets list
+```
+
+<Warning>
+  Secrets are environment-specific. If you have separate staging and production environments, set secrets for each.
+</Warning>
+
+## Build and Deploy
+
+### Standard Deployment
+
+<Steps>
+  <Step title="Build the project">
+    Compile TypeScript to JavaScript:
+    
+    ```bash
+    npm run build
+    ```
+    
+    This runs `tsc` and outputs compiled `.js` files. The build must complete with zero errors.
+  </Step>
+  
+  <Step title="Deploy to Notion">
+    Deploy all workers:
+    
+    ```bash
+    ntn workers deploy
+    ```
+    
+    This will:
+    1. Bundle your workers
+    2. Upload to Notion infrastructure
+    3. Register the tools (write-agent-digest, check-upstream-status, create-handoff-marker)
+    4. Return deployment status and worker URLs
+  </Step>
+</Steps>
+
+### One-Command Deployment
+
+Use the combined script for convenience:
+
+```bash
+npm run deploy
+```
+
+This runs `npm run build && ntn workers deploy` in sequence.
+
+## Deployment Checklist
+
+Before every deployment, verify:
+
+- [ ] `npm run build` exits with zero errors
+- [ ] `bun test` passes (all unit and schema tests)
+- [ ] `npm run check` (TypeScript) passes
+- [ ] All required secrets set via `ntn workers secrets set`
+- [ ] README documents input schema and expected output
+- [ ] No Bun-specific APIs in source code (e.g. `Bun.file()`, `Bun.serve()`)
+- [ ] Integration tests pass if you have `TEST_*` env vars configured
+
+## Invoking Workers After Deployment
+
+Once deployed, test each worker by invoking it directly:
+
+### write-agent-digest
+
+```bash
+ntn workers invoke write-agent-digest --input '{
+  "agent_name": "GitHub Insyncerator",
+  "digest_type": "GitHub Sync",
+  "target_db": "docs",
+  "date": "2026-03-04",
+  "status_type": "sync",
+  "status_value": "complete",
+  "sections": [
+    {
+      "heading": "Summary",
+      "content": ["Synced 5 repositories successfully."]
+    }
+  ],
+  "flagged_items": []
+}'
+```
+
+### check-upstream-status
+
+```bash
+ntn workers invoke check-upstream-status --input '{
+  "agent_name": "GitHub Insyncerator",
+  "target_db": "docs"
+}'
+```
+
+### create-handoff-marker
+
+```bash
+ntn workers invoke create-handoff-marker --input '{
+  "source_agent": "Inbox Manager",
+  "target_agent": "Personal Ops Manager",
+  "reason": "Client email requires personal attention",
+  "create_task": true,
+  "task_title": "Review client email: Project timeline",
+  "task_details": "Client asked about Q2 delivery date"
+}'
+```
+
+<Note>
+  For complex JSON input, save to a file and use `--input-file payload.json`.
+</Note>
+
+## Viewing Logs
+
+Check worker execution logs:
+
+```bash
+ntn workers logs
+```
+
+**Filter by worker:**
+
+```bash
+ntn workers logs --tool write-agent-digest
+```
+
+**Tail logs in real-time:**
+
+```bash
+ntn workers logs --follow
+```
+
+**View recent errors:**
+
+```bash
+ntn workers logs --level error
+```
+
+<Accordion title="Log best practices">
+  - Never log `NOTION_TOKEN` or other secrets
+  - Log structured data for easier parsing
+  - Include correlation IDs for tracking multi-worker flows
+  - Log validation failures with enough context to debug
+</Accordion>
+
+## Managing Deployed Workers
+
+### List Workers
+
+View all deployed workers:
+
+```bash
+ntn workers list
+```
+
+Output includes:
+- Worker name
+- Version
+- Deployment timestamp
+- Status (active/inactive)
+
+### Update a Worker
+
+To update a worker, build and deploy again:
+
+```bash
+npm run build && ntn workers deploy
+```
+
+The CLI will detect changes and update the appropriate workers.
+
+### Delete a Worker
+
+<Warning>
+  Deleting a worker is irreversible. Agents depending on it will receive errors.
+</Warning>
+
+```bash
+ntn workers delete <worker-name>
+```
+
+## Worker Configuration
+
+Workers are configured in `src/index.ts` using the tool-based API:
+
+```typescript
+import { Worker } from '@notionhq/workers';
+
+const worker = new Worker();
+
+worker.tool({
+  name: 'write-agent-digest',
+  description: 'Creates a governance-compliant agent digest page',
+  input_schema: { /* JSON schema */ },
+  execute: async (input, context) => {
+    // Worker implementation
+  }
+});
+
+export default worker;
+```
+
+**Key points:**
+- Each tool must have a name, description, input schema, and execute function
+- Input and output must be JSON-serializable (no `Date`, `Map`, `Set`)
+- Workers must return within platform timeout (typically 30–60s)
+
+## Environment-Specific Deployments
+
+If you maintain separate staging and production environments:
+
+### Deploy to Staging
+
+```bash
+ntn workers deploy --env staging
+```
+
+### Deploy to Production
+
+```bash
+ntn workers deploy --env production
+```
+
+<Warning>
+  Set secrets separately for each environment:
+  ```bash
+  ntn workers secrets set NOTION_TOKEN=... --env staging
+  ntn workers secrets set NOTION_TOKEN=... --env production
+  ```
+</Warning>
+
+## Rollback Procedure
+
+If a deployment causes issues:
+
+<Steps>
+  <Step title="Identify the previous version">
+    ```bash
+    ntn workers versions
+    ```
+  </Step>
+  
+  <Step title="Rollback to a specific version">
+    ```bash
+    ntn workers rollback <version-id>
+    ```
+  </Step>
+  
+  <Step title="Verify rollback succeeded">
+    ```bash
+    ntn workers list
+    ntn workers logs --since 5m
+    ```
+  </Step>
+</Steps>
+
+## Continuous Integration
+
+For automated deployments, add these steps to your CI pipeline:
+
+```yaml
+# Example GitHub Actions workflow
+- name: Install dependencies
+  run: npm install
+
+- name: Run tests
+  run: bun test
+
+- name: Type check
+  run: npm run check
+
+- name: Build
+  run: npm run build
+
+- name: Deploy to staging
+  run: ntn workers deploy --env staging
+  env:
+    NTN_AUTH_TOKEN: ${{ secrets.NTN_AUTH_TOKEN }}
+```
+
+<Note>
+  Store `NTN_AUTH_TOKEN` as a repository secret. Generate it with `ntn auth token create`.
+</Note>
+
+## Troubleshooting Deployment Issues
+
+<Accordion title="Error: Build failed with type errors">
+  **Cause:** TypeScript compilation errors.
+  
+  **Solution:**
+  1. Run `npm run check` locally to see errors
+  2. Fix type issues in source files
+  3. Verify `tsconfig.json` is correctly configured
+  4. Ensure no Bun-specific APIs are used
+</Accordion>
+
+<Accordion title="Error: Secrets not found">
+  **Cause:** Required environment variables not set in deployment environment.
+  
+  **Solution:**
+  1. List secrets: `ntn workers secrets list`
+  2. Set missing secrets: `ntn workers secrets set VAR_NAME=value`
+  3. If using multiple environments, ensure secrets are set for the target environment
+</Accordion>
+
+<Accordion title="Error: Timeout during deployment">
+  **Cause:** Deployment process exceeded time limit.
+  
+  **Solution:**
+  1. Check network connectivity
+  2. Retry deployment: `ntn workers deploy`
+  3. If issue persists, check Notion Workers status page
+</Accordion>
+
+<Accordion title="Error: Worker returns 'unauthorized' at runtime">
+  **Cause:** `NOTION_TOKEN` is invalid or integration lacks database access.
+  
+  **Solution:**
+  1. Verify token: `ntn workers secrets list` (shows if NOTION_TOKEN is set)
+  2. In Notion, share databases with your integration:
+     - Open each database → "..." menu → Add connections → Select integration
+  3. Regenerate and re-set token if needed:
+     ```bash
+     ntn workers secrets set NOTION_TOKEN=new_token
+     ntn workers deploy
+     ```
+</Accordion>
+
+<Accordion title="Workers invoke successfully but agents can't call them">
+  **Cause:** Agents need the worker URL or correct invocation pattern.
+  
+  **Solution:**
+  1. Check `ntn workers list` for correct worker names
+  2. Verify agent code uses correct worker names (write-agent-digest, check-upstream-status, create-handoff-marker)
+  3. Ensure agents have credentials to invoke workers (check agent-specific auth)
+</Accordion>
+
+## Monitoring and Observability
+
+### Key Metrics to Track
+
+- **Invocation count** — How many times each worker is called
+- **Success rate** — Percentage of successful executions
+- **Execution time** — P50, P95, P99 latency
+- **Error rate** — Failures by error type
+
+### Setting Up Alerts
+
+Configure alerts for:
+
+1. **High error rate** (>5% of requests failing)
+2. **Slow execution** (P95 >10s)
+3. **Deployment failures**
+4. **Unauthorized errors** (invalid credentials)
+
+Use `ntn workers logs --level error` in monitoring scripts.
+
+## Best Practices
+
+<Steps>
+  <Step title="Test locally first">
+    Always run `bun test` and `npm run check` before deploying.
+  </Step>
+  
+  <Step title="Use staging environment">
+    Deploy to staging first, verify functionality, then promote to production.
+  </Step>
+  
+  <Step title="Document changes">
+    Update README and CHANGELOG when worker schemas change.
+  </Step>
+  
+  <Step title="Monitor after deployment">
+    Watch logs for 5–10 minutes after deploying:
+    ```bash
+    ntn workers logs --follow
+    ```
+  </Step>
+  
+  <Step title="Version your deployments">
+    Tag releases in git so you can correlate deployments with code changes:
+    ```bash
+    git tag v1.2.3
+    git push origin v1.2.3
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+- Review [Development Guide](/guides/development) for coding standards
+- See [Testing Guide](/guides/testing) for test patterns
+- Check [API Reference](/api/write-agent-digest) for worker schemas
+- Read [WORKERS.md](https://github.com/your-repo/jre-notion-workers/blob/main/WORKERS.md) for platform details

@@ -1,80 +1,364 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get your first JRE Notion Worker running with real examples
 ---
 
-## Get started in three steps
+# Quick Start
 
-Get your documentation site running locally and make your first customization.
+This guide walks you through running your first worker locally and understanding the basic workflow of the 11-agent system.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Before starting, ensure you've completed the [installation](/installation) and verified your Notion credentials.
 
-### Step 2: Deploy your changes
+## Start the Development Server
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+JRE Notion Workers runs as a local HTTP server during development:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<CodeGroup>
+```bash Default
+bun run dev
+```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash 1Password CLI
+bun run dev:1p
+```
 
-### Step 3: Go live
+```bash .env.local
+bun run dev:local
+```
+</CodeGroup>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+You should see output indicating the worker server is running:
 
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+```
+Worker server listening on http://localhost:8787
+```
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  The development server uses Bun for fast TypeScript execution. Production deploys target Node.js 22 via the `ntn` CLI.
 </Note>
+
+## Understanding the Agent Workflow
+
+Agents in the 11-agent system follow a three-step pattern:
+
+<Steps>
+  <Step title="Check upstream status">
+    At run start, call `check-upstream-status` for any agents you depend on. This ensures you have fresh data before proceeding.
+  </Step>
+  
+  <Step title="Create handoffs when needed">
+    During execution, call `create-handoff-marker` when escalating work to another agent. This creates a structured handoff record with circuit breaker protection.
+  </Step>
+  
+  <Step title="Write the digest">
+    At run end, call `write-agent-digest` with your structured output. This creates a schema-compliant digest page in Notion.
+  </Step>
+</Steps>
+
+Let's explore each worker with real examples.
+
+## Example 1: Check Upstream Status
+
+The `check-upstream-status` worker finds the most recent digest for an upstream agent and returns its status and age.
+
+### Use Case
+
+Before the **Client Health Scorecard** agent runs, it checks three upstream agents to ensure their data is fresh:
+
+```typescript
+const upstreamAgents = [
+  "Time Log Auditor",
+  "Docs Librarian",
+  "VEP Weekly Reporter",
+];
+
+for (const agentName of upstreamAgents) {
+  const result = await checkUpstreamStatus({
+    agent_name: agentName,
+    max_age_hours: 48,
+    require_current_cycle: true,
+  });
+  
+  if (result.degraded) {
+    console.log(`⚠️ ${agentName} is stale or failed`);
+    console.log(result.data_completeness_notice);
+  }
+}
+```
+
+### Input Schema
+
+```typescript
+{
+  agent_name: string;           // One of the 11 agent names
+  max_age_hours?: number;       // Optional: flag as stale if older than this
+  require_current_cycle?: boolean; // Optional: must be from current reporting cycle
+}
+```
+
+### Expected Output
+
+```json
+{
+  "success": true,
+  "agent_name": "Time Log Auditor",
+  "status": "complete",
+  "status_type": "sync",
+  "run_time": "2026-02-28T09:00:00-06:00",
+  "age_hours": 2.5,
+  "page_url": "https://www.notion.so/time-log-audit-2026-02-28-abc123",
+  "degraded": false,
+  "data_completeness_notice": null
+}
+```
+
+If the upstream agent is stale or failed:
+
+```json
+{
+  "success": true,
+  "agent_name": "Docs Librarian",
+  "status": "failed",
+  "degraded": true,
+  "data_completeness_notice": "⚠️ Upstream Docs Librarian last ran 72 hours ago (failed). Data may be incomplete."
+}
+```
+
+## Example 2: Write Agent Digest (Healthy Run)
+
+The `write-agent-digest` worker creates a schema-compliant digest page from structured agent output.
+
+### Use Case
+
+The **GitHub Insyncerator** completes a sync run with 2 flagged items and 1 escalation:
+
+```typescript
+const digestInput = {
+  agent_name: "GitHub Insyncerator",
+  agent_emoji: "🔄",
+  status_type: "sync",
+  status_value: "complete",
+  run_time_chicago: "2026-02-28T09:00:00-06:00",
+  scope: "All open PRs and recent commits in tracked repos",
+  input_versions: "None",
+  
+  flagged_items: [
+    {
+      description: "PR #42 needs review",
+      task_link: "https://www.notion.so/task-abc123"
+    },
+    {
+      description: "Spike in failed CI on main",
+      task_link: "https://www.notion.so/task-def456"
+    },
+  ],
+  
+  actions_taken: {
+    created_tasks: [
+      {
+        name: "Review PR #42",
+        notion_url: "https://www.notion.so/task-abc123"
+      }
+    ],
+    updated_tasks: [
+      {
+        name: "Investigate CI failures",
+        notion_url: "https://www.notion.so/task-def456"
+      }
+    ],
+  },
+  
+  summary: "Synced 3 repos. 2 items flagged, 1 escalation to Client Repo Auditor.",
+  needs_review: [],
+  
+  escalations: [
+    {
+      escalated_to: "Client Repo Auditor",
+      escalation_reason: "Spike in CI failures may need client repo audit",
+      escalation_owner: "Client Repo Auditor",
+      handoff_complete: false,
+    },
+  ],
+  
+  target_database: "docs",
+  doc_type: "Agent Digest",
+};
+
+const result = await writeAgentDigest(digestInput);
+```
+
+### Expected Output
+
+```json
+{
+  "success": true,
+  "page_id": "abc123def456",
+  "page_url": "https://www.notion.so/github-sync-2026-02-28-abc123",
+  "title": "🔄 GitHub Sync — 2026-02-28",
+  "is_heartbeat": false
+}
+```
+
+The created Notion page will have:
+- **Title:** `🔄 GitHub Sync — 2026-02-28`
+- **Status line:** `✅ Sync complete • 2026-02-28 09:00 CT`
+- **Scope section:** "All open PRs and recent commits in tracked repos"
+- **Flagged Items section:** Two items with task links
+- **Actions Taken section:** 1 created, 1 updated task
+- **Escalations section:** One escalation to Client Repo Auditor
+- **Summary section:** Run summary text
+
+## Example 3: Write Agent Digest (Heartbeat)
+
+When an agent runs but finds no actionable items, it creates a heartbeat digest:
+
+```typescript
+const heartbeatInput = {
+  agent_name: "Inbox Manager",
+  agent_emoji: "📧",
+  status_type: "heartbeat",
+  status_value: "complete",
+  run_time_chicago: "2026-02-28T07:00:00-06:00",
+  scope: "Inbox and linked task database",
+  input_versions: "None",
+  
+  flagged_items: [],
+  actions_taken: {
+    created_tasks: [],
+    updated_tasks: [],
+  },
+  
+  summary: "No actionable items.",
+  needs_review: [],
+  escalations: [],
+  
+  target_database: "docs",
+  doc_type: "Agent Digest",
+};
+
+const result = await writeAgentDigest(heartbeatInput);
+```
+
+### Expected Output
+
+```json
+{
+  "success": true,
+  "page_id": "def456ghi789",
+  "page_url": "https://www.notion.so/email-triage-2026-02-28-def456",
+  "title": "📧 Email Triage — 2026-02-28",
+  "is_heartbeat": true
+}
+```
+
+The page will include: `Heartbeat: no actionable items` so the **Morning Briefing** agent knows this is healthy silence, not a failure.
+
+## Example 4: Create Handoff Marker
+
+When an agent escalates work to another agent, it creates a handoff marker:
+
+```typescript
+const handoffInput = {
+  source_agent: "GitHub Insyncerator",
+  target_agent: "Client Repo Auditor",
+  escalation_reason: "Stale spike in CI failures; needs client repo audit",
+  source_digest_url: "https://www.notion.so/github-sync-2026-02-28-abc123",
+  create_task: true,
+  task_priority: "🟡 Medium",
+};
+
+const result = await createHandoffMarker(handoffInput);
+```
+
+### Expected Output
+
+```json
+{
+  "success": true,
+  "handoff_block": "📤 **Escalated to:** Client Repo Auditor\n**Reason:** Stale spike in CI failures; needs client repo audit\n**Task:** [View Task](https://www.notion.so/task-xyz789)",
+  "task_created": true,
+  "task_url": "https://www.notion.so/task-xyz789",
+  "duplicate_prevented": false,
+  "existing_task_url": null,
+  "escalation_capped": false,
+  "needs_manual_review": false
+}
+```
+
+The source agent pastes `handoff_block` into its Escalations section.
+
+<Note>
+  **Circuit breaker:** If a handoff already exists for the same source→target within 7 days, `duplicate_prevented` will be `true` and no new task is created. The existing task URL is returned instead.
+</Note>
+
+<Warning>
+  **Escalation cap:** If this is the 3rd escalation in the same direction within 7 days, `escalation_capped` will be `true` and `needs_manual_review` will be set, signaling that human review is required.
+</Warning>
+
+## Run Tests
+
+Verify everything works by running the test suite:
+
+<CodeGroup>
+```bash Unit tests
+bun test
+```
+
+```bash Watch mode
+bun test --watch
+```
+
+```bash Integration tests (requires TEST_* env vars)
+bun test tests/integration/
+```
+
+```bash Coverage
+bun test --coverage
+```
+</CodeGroup>
+
+<Warning>
+  Integration tests require `TEST_NOTION_TOKEN` and `TEST_DOCS_DATABASE_ID` environment variables. **Never use production database IDs for testing.**
+</Warning>
+
+## Deploy to Production
+
+When you're ready to deploy, build and deploy via the `ntn` CLI:
+
+<Steps>
+  <Step title="Build the project">
+    ```bash
+    npm run build
+    ```
+  </Step>
+  
+  <Step title="Deploy with ntn">
+    ```bash
+    ntn workers deploy
+    ```
+    
+    Ensure you've set production secrets via `ntn workers secrets set` (see [Installation](/installation#deployed-workers-production)).
+  </Step>
+  
+  <Step title="Verify deployment">
+    Test your deployed workers by invoking them with the production URLs provided by `ntn`.
+  </Step>
+</Steps>
+
+## Next Steps
+
+Now that you've seen the workers in action, explore the full API reference:
+
+<CardGroup cols={3}>
+  <Card title="write-agent-digest" icon="file-lines" href="/api/write-agent-digest">
+    Complete schema and examples for creating digest pages
+  </Card>
+  <Card title="check-upstream-status" icon="magnifying-glass" href="/api/check-upstream-status">
+    Query upstream agent status and freshness
+  </Card>
+  <Card title="create-handoff-marker" icon="handshake" href="/api/create-handoff-marker">
+    Coordinate escalations between agents
+  </Card>
+</CardGroup>

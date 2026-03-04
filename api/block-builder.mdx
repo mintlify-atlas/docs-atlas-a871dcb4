@@ -1,0 +1,358 @@
+---
+title: "Block Builder"
+description: "Convert markdown-style content to Notion API block objects"
+---
+
+Utilities for building Notion API block objects from markdown-style content lines. Used by `write-agent-digest` to convert digest content into properly formatted Notion blocks.
+
+## Function
+
+### buildDigestBlocks
+
+Converts an array of content lines to Notion block objects.
+
+```typescript
+function buildDigestBlocks(lines: string[]): Array<Record<string, unknown>>
+```
+
+**Parameters:**
+- `lines` - Array of content strings (markdown-style formatting)
+
+**Returns:**
+- Array of Notion block objects ready for `blocks.children.append`
+
+**Supported Formats:**
+
+| Input Format | Notion Block Type | Example |
+|--------------|-------------------|----------|
+| `## Heading` | `heading_2` | `## Summary` |
+| `- Item` | `bulleted_list_item` | `- Task created` |
+| Plain text | `paragraph` | `Sync completed successfully` |
+| Empty/whitespace | Skipped | ` ` (ignored) |
+
+**Example:**
+
+```typescript
+import { buildDigestBlocks } from "./block-builder.js";
+
+const content = [
+  "Sync Status: ✅ Complete",
+  "Run Time: 2026-03-04 08:30 (America/Chicago)",
+  "",
+  "## Summary",
+  "Processed 42 emails from inbox.",
+  "- Created 3 tasks",
+  "- Updated 2 existing tasks",
+  "",
+  "## Flagged Items",
+  "No items flagged for review."
+];
+
+const blocks = buildDigestBlocks(content);
+// Returns Notion block array (see structure below)
+```
+
+## Block Structure
+
+The function generates Notion block objects following the official API schema.
+
+### Paragraph Block
+
+```typescript
+{
+  type: "paragraph",
+  paragraph: {
+    rich_text: [
+      {
+        type: "text",
+        text: { content: "Your text content here" }
+      }
+    ]
+  }
+}
+```
+
+### Heading 2 Block
+
+```typescript
+{
+  type: "heading_2",
+  heading_2: {
+    rich_text: [
+      {
+        type: "text",
+        text: { content: "Heading text" }
+      }
+    ]
+  }
+}
+```
+
+### Bulleted List Item Block
+
+```typescript
+{
+  type: "bulleted_list_item",
+  bulleted_list_item: {
+    rich_text: [
+      {
+        type: "text",
+        text: { content: "List item text" }
+      }
+    ]
+  }
+}
+```
+
+## Usage Patterns
+
+### Creating Digest Content
+
+```typescript
+import { buildDigestBlocks } from "./block-builder.js";
+import { buildStatusLine } from "./status-parser.js";
+import { formatRunTime } from "./date-utils.js";
+
+function createDigestBlocks(input: {
+  statusType: StatusType;
+  statusValue: StatusValue;
+  runTime: string;
+  scope: string;
+  summary: string;
+  flaggedItems: FlaggedItem[];
+}) {
+  const lines = [
+    buildStatusLine(input.statusType, input.statusValue),
+    `Run Time: ${formatRunTime(input.runTime)}`,
+    `Scope: ${input.scope}`,
+    "",
+    "## Summary",
+    input.summary,
+  ];
+  
+  if (input.flaggedItems.length > 0) {
+    lines.push("", "## Flagged Items");
+    input.flaggedItems.forEach(item => {
+      lines.push(`- ${item.description}`);
+    });
+  }
+  
+  return buildDigestBlocks(lines);
+}
+```
+
+### Writing to Notion Page
+
+```typescript
+import { buildDigestBlocks } from "./block-builder.js";
+import { getNotionClient } from "./notion-client.js";
+
+async function writeDigestPage(pageId: string, contentLines: string[]) {
+  const notion = getNotionClient();
+  const blocks = buildDigestBlocks(contentLines);
+  
+  await notion.blocks.children.append({
+    block_id: pageId,
+    children: blocks as any[], // Notion SDK type
+  });
+}
+```
+
+### Building Complex Content
+
+```typescript
+import { buildDigestBlocks } from "./block-builder.js";
+
+function buildFullDigest(data: {
+  status: string;
+  runTime: string;
+  summary: string;
+  actions: { created: TaskRef[]; updated: TaskRef[] };
+  needsReview: NeedsReview[];
+}) {
+  const lines: string[] = [
+    data.status,
+    data.runTime,
+    "",
+    "## Summary",
+    data.summary,
+  ];
+  
+  // Actions taken section
+  if (data.actions.created.length > 0 || data.actions.updated.length > 0) {
+    lines.push("", "## Actions Taken");
+    
+    if (data.actions.created.length > 0) {
+      lines.push("Created tasks:");
+      data.actions.created.forEach(task => {
+        lines.push(`- ${task.name}`);
+      });
+    }
+    
+    if (data.actions.updated.length > 0) {
+      lines.push("Updated tasks:");
+      data.actions.updated.forEach(task => {
+        lines.push(`- ${task.name}`);
+      });
+    }
+  }
+  
+  // Needs review section
+  if (data.needsReview.length > 0) {
+    lines.push("", "## Needs Review");
+    data.needsReview.forEach(item => {
+      lines.push(`- ${item.description}`);
+    });
+  }
+  
+  return buildDigestBlocks(lines);
+}
+```
+
+### Filtering Empty Lines
+
+```typescript
+import { buildDigestBlocks } from "./block-builder.js";
+
+// Empty lines are automatically skipped
+const lines = [
+  "Status: Complete",
+  "",          // Skipped
+  "  ",        // Skipped (whitespace only)
+  "Summary",
+  "\t",        // Skipped (tab only)
+];
+
+const blocks = buildDigestBlocks(lines);
+// Only creates blocks for "Status: Complete" and "Summary"
+```
+
+## Implementation Details
+
+### Line Processing Logic
+
+```typescript
+for (const line of lines) {
+  if (line.startsWith("## ")) {
+    // Heading 2: strip "## " prefix
+    blocks.push(heading2(line.replace(/^##\s*/, "")));
+  } else if (line.startsWith("- ")) {
+    // Bulleted list: strip "- " prefix
+    blocks.push(bulletedListItem(line.replace(/^-\s*/, "")));
+  } else if (line.trim()) {
+    // Paragraph: only if not empty
+    blocks.push(paragraph(line));
+  }
+  // Empty lines (line.trim() === "") are skipped
+}
+```
+
+### Prefix Stripping
+
+- **Headings:** Regex `/^##\s*/` removes `##` and any following whitespace
+- **Lists:** Regex `/^-\s*/` removes `-` and any following whitespace
+
+### Empty Line Handling
+
+- Lines with only whitespace (`line.trim()` returns `""`) are skipped
+- No empty paragraph blocks are created
+
+## Limitations
+
+### Not Supported
+
+- **Heading 1 (`#`)** - Only `##` (heading 2) is supported
+- **Heading 3+ (`###`)** - Not recognized (treated as paragraph)
+- **Numbered lists (`1.`)** - Use bulleted lists instead
+- **Nested lists** - All lists are top-level
+- **Rich text formatting** - No bold, italic, links, etc.
+- **Code blocks** - Use paragraphs with manual formatting
+- **Other block types** - No callouts, toggles, tables, etc.
+
+### Design Rationale
+
+This is a **minimal block builder** for structured agent digests:
+
+- Simple, predictable output
+- No complex parsing needed
+- Easy to test and debug
+- Fits agent digest use case
+
+For richer content, extend the function or use the Notion SDK directly.
+
+## Type Definitions
+
+### Internal Types
+
+```typescript
+type RichTextItem = {
+  type: "text";
+  text: { content: string };
+};
+```
+
+### Helper Functions
+
+```typescript
+function paragraph(content: string): {
+  type: "paragraph";
+  paragraph: { rich_text: RichTextItem[] };
+}
+
+function heading2(content: string): {
+  type: "heading_2";
+  heading_2: { rich_text: RichTextItem[] };
+}
+
+function bulletedListItem(content: string): {
+  type: "bulleted_list_item";
+  bulleted_list_item: { rich_text: RichTextItem[] };
+}
+```
+
+<Note>
+These helper functions are **internal** and not exported. Use `buildDigestBlocks` as the public API.
+</Note>
+
+## Testing
+
+### Example Test Case
+
+```typescript
+import { buildDigestBlocks } from "./block-builder.js";
+import { describe, it, expect } from "bun:test";
+
+describe("buildDigestBlocks", () => {
+  it("should convert markdown-style lines to Notion blocks", () => {
+    const lines = [
+      "Status: Complete",
+      "## Summary",
+      "All tasks processed",
+      "- Created 3 tasks",
+      "- Updated 2 tasks",
+    ];
+    
+    const blocks = buildDigestBlocks(lines);
+    
+    expect(blocks).toHaveLength(5);
+    expect(blocks[0].type).toBe("paragraph");
+    expect(blocks[1].type).toBe("heading_2");
+    expect(blocks[2].type).toBe("paragraph");
+    expect(blocks[3].type).toBe("bulleted_list_item");
+    expect(blocks[4].type).toBe("bulleted_list_item");
+  });
+  
+  it("should skip empty lines", () => {
+    const lines = ["Text", "", "  ", "More text"];
+    const blocks = buildDigestBlocks(lines);
+    
+    expect(blocks).toHaveLength(2);
+  });
+});
+```
+
+## Related
+
+- [write-agent-digest](/api/write-agent-digest) - Primary consumer of this utility
+- [Status Parser](/api/status-parser) - Generates status lines for digests
+- [Types](/api/types) - Interface definitions for digest content

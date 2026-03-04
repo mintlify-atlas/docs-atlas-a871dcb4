@@ -1,0 +1,238 @@
+---
+title: "check-upstream-status"
+description: "Finds the most recent digest for an agent and returns structured status"
+---
+
+## Overview
+
+The `check-upstream-status` worker finds the most recent digest page for a given agent, reads its machine-readable status line and run timestamp, and returns a structured status object.
+
+This worker enables agents to check the health and recency of upstream data sources before starting their own runs, supporting the governance model where agents declare data dependencies and can detect when upstream data is stale or degraded.
+
+## Input Schema
+
+<ParamField path="agent_name" type="string" required>
+  The name of the agent whose status you want to check. Must be a valid agent name from the system's registry.
+</ParamField>
+
+<ParamField path="max_age_hours" type="number">
+  Maximum age in hours before marking the digest as stale. Defaults to `48` hours.
+</ParamField>
+
+<ParamField path="require_current_cycle" type="boolean">
+  If `true`, marks the digest as stale if `run_time_age_hours` exceeds the default 48-hour threshold, regardless of `max_age_hours`. Defaults to `false`.
+</ParamField>
+
+## Output Schema
+
+<ResponseField name="found" type="boolean">
+  Whether a matching digest page was found in the target database.
+</ResponseField>
+
+<ResponseField name="agent_name" type="string">
+  Echo of the input `agent_name`.
+</ResponseField>
+
+<ResponseField name="status" type="UpstreamStatus">
+  The computed status. One of: `complete`, `partial`, `failed`, `full_report`, `stub`, `not_found`, `stale`, `unknown`.
+</ResponseField>
+
+<ResponseField name="status_type" type="StatusType | null">
+  The parsed status type from the digest's status line. One of: `sync`, `snapshot`, `report`, `heartbeat`, or `null` if not found.
+</ResponseField>
+
+<ResponseField name="run_time" type="string | null">
+  ISO 8601 timestamp of when the agent ran (parsed from "Run Time:" line in digest), or `null` if not found.
+</ResponseField>
+
+<ResponseField name="run_time_age_hours" type="number | null">
+  How many hours ago the digest was created, based on `run_time`. `null` if `run_time` is unavailable.
+</ResponseField>
+
+<ResponseField name="is_stale" type="boolean">
+  Whether the digest is considered stale based on age checks and `require_current_cycle`.
+</ResponseField>
+
+<ResponseField name="is_heartbeat" type="boolean">
+  Whether the digest contains the "Heartbeat: no actionable items" line.
+</ResponseField>
+
+<ResponseField name="is_error_titled" type="boolean">
+  Whether the digest page title includes the word "ERROR".
+</ResponseField>
+
+<ResponseField name="page_url" type="string | null">
+  The full Notion URL of the digest page, or `null` if not found.
+</ResponseField>
+
+<ResponseField name="page_id" type="string | null">
+  The Notion page ID (32-character hex), or `null` if not found.
+</ResponseField>
+
+<ResponseField name="degraded" type="boolean">
+  Whether the upstream data is considered degraded. True if status is `not_found`, `stale`, `partial`, `failed`, or `is_error_titled` is true.
+</ResponseField>
+
+<ResponseField name="data_completeness_notice" type="string">
+  A human-readable notice explaining why the data is degraded (if `degraded` is true). Empty string if not degraded.
+</ResponseField>
+
+## Example Usage
+
+```typescript
+const upstreamAgents = [
+  "Time Log Auditor",
+  "Docs Librarian",
+  "VEP Weekly Reporter",
+];
+
+for (const agent_name of upstreamAgents) {
+  const result = await worker.execute({
+    agent_name,
+    max_age_hours: 48,
+    require_current_cycle: true,
+  });
+
+  if (result.degraded) {
+    console.warn(result.data_completeness_notice);
+    // Handle degraded upstream: maybe skip dimensions or flag in output
+  } else {
+    console.log(`${agent_name}: ${result.status} (ran ${result.run_time_age_hours}h ago)`);
+    // Use result.page_url, result.run_time, etc. in your digest
+  }
+}
+```
+
+## Status Types Explained
+
+The `status` field is computed from the parsed status line and age checks:
+
+<ResponseField name="complete">
+  The upstream agent completed successfully. Status line was "Sync Complete", "Snapshot Complete", or "Report Complete".
+</ResponseField>
+
+<ResponseField name="partial">
+  The upstream agent completed with warnings. Status line was "Sync Partial", "Snapshot Partial", or "Report Partial".
+</ResponseField>
+
+<ResponseField name="failed">
+  The upstream agent failed. Status line was "Sync Failed", "Snapshot Failed", or "Report Failed".
+</ResponseField>
+
+<ResponseField name="full_report">
+  The upstream agent produced a full report. Status line was "Report Full Report".
+</ResponseField>
+
+<ResponseField name="stub">
+  The upstream agent produced a stub report. Status line was "Report Stub".
+</ResponseField>
+
+<ResponseField name="not_found">
+  No digest page matching the agent's digest patterns was found in the target database.
+</ResponseField>
+
+<ResponseField name="stale">
+  A digest was found, but it's too old based on `max_age_hours` or `require_current_cycle` rules.
+</ResponseField>
+
+<ResponseField name="unknown">
+  A digest was found but the status line couldn't be parsed, or a Notion API error occurred.
+</ResponseField>
+
+## Behavior Details
+
+### Max Age Logic
+
+The worker marks a digest as `stale` if:
+
+1. `require_current_cycle` is `true` AND `run_time_age_hours` > 48 hours, OR
+2. The digest's `created_time` age (page creation time) exceeds `max_age_hours`
+
+Default `max_age_hours` is 48.
+
+### Require Current Cycle
+
+When `require_current_cycle` is `true`, the worker enforces a hard 48-hour limit on `run_time` (the timestamp parsed from the digest's "Run Time:" line). This ensures you only trust data from the current operational cycle, regardless of `max_age_hours`.
+
+### Data Completeness Notice
+
+When `degraded` is `true`, the `data_completeness_notice` field contains a formatted warning message:
+
+- **not_found**: `⚠️ Data Completeness Notice: {agent} digest not found for current cycle. Dimensions relying on this data marked 🔘 Unavailable.`
+- **stale**: `⚠️ Data Completeness Notice: {agent} last ran {age}h ago (expected within {max_age}h). Treating as stale.`
+- **partial/failed**: `⚠️ Data Completeness Notice: {agent} last run was ⚠️ Partial / ❌ Failed. Upstream data may be incomplete.`
+- **error_titled**: `⚠️ Data Completeness Notice: {agent} last digest was an ERROR run. Treating upstream data as degraded.`
+
+These notices can be included directly in your agent's digest to explain missing or incomplete dimensions.
+
+### Digest Lookup
+
+The worker queries the Docs (or Home Docs) database for pages matching the agent's digest patterns. It:
+
+1. Uses the agent's registered digest title patterns (e.g., for "GitHub Insyncerator": patterns like "GitHub Sync")
+2. Sorts results by `created_time` descending
+3. Returns the most recent match
+4. Reads the page's blocks to parse the status line and run time
+
+### Error Handling
+
+If the Notion API call fails (network error, invalid credentials, etc.), the worker returns:
+
+```typescript
+{
+  found: false,
+  status: "unknown",
+  degraded: true,
+  data_completeness_notice: "⚠️ Data Completeness Notice: Error reading {agent} — {error message}",
+  // ... other fields set to null/false
+}
+```
+
+## Use Cases
+
+### Pre-Run Dependency Check
+
+```typescript
+const upstream = await checkUpstreamStatus({
+  agent_name: "Docs Librarian",
+  max_age_hours: 24,
+  require_current_cycle: true,
+});
+
+if (upstream.degraded) {
+  console.log("Warning: Upstream Docs Librarian is degraded");
+  // Optionally: skip processing, flag dimensions as unavailable, or continue with caveats
+}
+```
+
+### Building Dependency Matrix
+
+```typescript
+const dependencies = ["Time Log Auditor", "Project Tracker", "Client Health Scorecard"];
+const statuses = await Promise.all(
+  dependencies.map(agent_name =>
+    checkUpstreamStatus({ agent_name, max_age_hours: 48, require_current_cycle: false })
+  )
+);
+
+const allHealthy = statuses.every(s => s.status === "complete" && !s.degraded);
+console.log(`All dependencies healthy: ${allHealthy}`);
+```
+
+### Audit Trail for Reports
+
+Include upstream status in your own digest:
+
+```typescript
+const upstream = await checkUpstreamStatus({
+  agent_name: "Time Log Auditor",
+  max_age_hours: 48,
+  require_current_cycle: true,
+});
+
+const auditLine = upstream.degraded
+  ? upstream.data_completeness_notice
+  : `✅ Time Log Auditor: ${upstream.status} (${upstream.run_time_age_hours}h ago)`;
+
+// Include `auditLine` in your digest's Input Versions or Summary section
+```

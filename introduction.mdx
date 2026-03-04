@@ -1,0 +1,120 @@
+---
+title: Introduction
+description: Notion Workers that enforce governance for the 11-agent custom automation system
+---
+
+# Introduction
+
+JRE Notion Workers is a collection of three specialized Notion Workers that enforce governance, reduce agent overhead, and make machine-to-machine coordination reliable across an 11-agent custom automation fleet.
+
+## What Problems This Solves
+
+When building a multi-agent automation system with Notion as the coordination layer, you face several challenges:
+
+- **Schema compliance:** Agents must write digest pages following strict formatting rules (status lines, section ordering, error titles)
+- **State checking:** Downstream agents need to verify upstream data freshness and status before running
+- **Handoff coordination:** Agents escalating to each other need structured records with circuit breakers to prevent duplicate escalations
+
+Without centralized governance, every agent must remember and implement these rules independently, leading to drift, errors, and maintenance overhead.
+
+## The Three Workers
+
+JRE Notion Workers provides three tools that solve these problems:
+
+### 1. write-agent-digest
+
+Accepts structured agent output and creates a schema-compliant digest page in the Docs or Home Docs database. Handles status lines, section ordering, ERROR-title naming, and heartbeat formatting so agents don't have to remember the rules.
+
+**Key features:**
+- Derives status emoji (✅ / ⚠️ / ❌) from input automatically
+- Enforces page title patterns: `{emoji} {Digest Type} — {date}` or `{Digest Type} ERROR — {date}`
+- Adds "Heartbeat: no actionable items" when appropriate
+- Validates that every flagged item has `task_link` or `no_task_reason`
+- Always renders Actions Taken section (Created Tasks / Updated Tasks / No Tasks Created)
+
+### 2. check-upstream-status
+
+Finds the most recent digest for a given agent, parses the machine-readable status line and run timestamp, and returns a structured result. Use at the start of any run that depends on upstream data.
+
+**Key features:**
+- Reads from both Docs and Home Docs databases
+- Returns status type (sync/snapshot/report/heartbeat) and value (complete/failed/degraded)
+- Calculates data age and staleness
+- Provides `data_completeness_notice` for degraded upstream states
+
+### 3. create-handoff-marker
+
+Creates a handoff record when one agent escalates to another. Returns a pre-formatted Escalations block and optionally creates a Notion Task.
+
+**Key features:**
+- Circuit breaker: prevents duplicate handoff within 7 days for the same source→target
+- Re-escalation cap: maximum 2 escalations in same direction within 7 days
+- Sets `needs_manual_review` when escalation cap is reached
+- Optional task creation with priority levels
+
+## The 11-Agent System Context
+
+These workers support a production automation fleet of 11 agents:
+
+| Agent | Digest Title Pattern | Target Database |
+|-------|---------------------|----------------|
+| Inbox Manager | Email Triage | docs |
+| Personal Ops Manager | Personal Triage | home_docs |
+| GitHub Insyncerator | GitHub Sync | docs |
+| Client Repo Auditor | Client Repo Audit | docs |
+| Docs Librarian | Docs Quick Scan, Docs Cleanup Report | docs |
+| VEP Weekly Reporter | VEP Weekly Activity Report | docs |
+| Home & Life Watcher | Home & Life Weekly Digest | home_docs |
+| Template Freshness Watcher | Setup Template Freshness Report | docs |
+| Time Log Auditor | Time Log Audit | docs |
+| Client Health Scorecard | Client Health Scorecard | docs |
+| Morning Briefing | Morning Briefing | docs |
+
+Each agent follows a standard workflow:
+
+1. **At run start:** Call `check-upstream-status` for any upstream agents you depend on
+2. **During the run:** Call `create-handoff-marker` when escalating to another agent
+3. **At run end:** Call `write-agent-digest` with structured output to create the digest page
+
+## Architecture
+
+The project follows a layered architecture:
+
+- **Workers layer** (`src/workers/`) — Validates input, orchestrates logic, calls Notion API
+- **Shared layer** (`src/shared/`) — Pure functions for parsing, formatting, validation (unit-testable)
+- **Types layer** (`src/shared/types.ts`) — Typed contracts for all inputs and outputs
+
+This separation ensures business logic is tested independently from I/O operations.
+
+## Governance Rules Enforced by Code
+
+- **Status lines:** Sync / Snapshot / Report status and emoji are derived from input
+- **Page titles:** Consistent format based on status (normal vs. degraded/error)
+- **Heartbeat:** Added automatically when there are no actionable items
+- **Flagged items:** Every flagged item must have `task_link` or `no_task_reason`
+- **Actions Taken:** Always rendered, even when empty
+- **Handoff circuit breaker:** No duplicate handoff task for same source→target within 7 days
+- **Escalation cap:** At most 2 escalations in same direction within 7 days
+
+## What You'll Find in These Docs
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Set up your development environment, install dependencies, and configure credentials
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get your first worker running with real examples
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/write-agent-digest">
+    Detailed documentation for all three workers and their schemas
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Deep dive into system design, data flow, and module boundaries
+  </Card>
+</CardGroup>
+
+## Alpha Status
+
+<Warning>
+  `@notionhq/workers` is in **alpha**. APIs and deployment behavior may change. See [makenotion/workers-template](https://github.com/makenotion/workers-template) for the latest.
+</Warning>

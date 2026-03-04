@@ -1,0 +1,258 @@
+---
+title: "write-agent-digest"
+description: "Creates governance-compliant agent digest pages in Docs or Home Docs"
+---
+
+## Overview
+
+The `write-agent-digest` worker creates a governance-compliant agent digest or report page in the Docs database. It handles all formatting, status line formatting, section ordering, and ERROR-title naming automatically.
+
+This worker is the standard way for agents in the 11-agent system to persist their run results, flag items for review, track actions taken, and escalate to other agents.
+
+## Input Schema
+
+<ParamField path="agent_name" type="string" required>
+  The name of the agent creating the digest. Must be a valid agent name from the system's agent registry.
+</ParamField>
+
+<ParamField path="agent_emoji" type="string" required>
+  The emoji representing the agent (e.g., "🔄" for GitHub Insyncerator). Used in the page title when the run is successful.
+</ParamField>
+
+<ParamField path="status_type" type="StatusType" required>
+  The type of status for this run. One of: `sync`, `snapshot`, `report`, `heartbeat`.
+</ParamField>
+
+<ParamField path="status_value" type="StatusValue" required>
+  The result status of the run. One of: `complete`, `partial`, `failed`, `full_report`, `stub`.
+</ParamField>
+
+<ParamField path="run_time_chicago" type="string" required>
+  ISO 8601 timestamp of the run in Chicago timezone (e.g., `2026-02-28T09:00:00-06:00`). Used for page title and run time display.
+</ParamField>
+
+<ParamField path="scope" type="string" required>
+  Description of what the agent processed in this run (e.g., "All open PRs and recent commits in tracked repos").
+</ParamField>
+
+<ParamField path="input_versions" type="string" required>
+  Version information for input data sources. Use "None" if not applicable.
+</ParamField>
+
+<ParamField path="flagged_items" type="FlaggedItem[]" required>
+  Array of items that need attention. Each item must have either `task_link` or `no_task_reason`.
+  
+  ```typescript
+  interface FlaggedItem {
+    description: string;
+    task_link?: string;
+    no_task_reason?: string;
+  }
+  ```
+</ParamField>
+
+<ParamField path="actions_taken" type="ActionsTaken" required>
+  Tasks created or updated during this run.
+  
+  ```typescript
+  interface ActionsTaken {
+    created_tasks: TaskRef[];
+    updated_tasks: TaskRef[];
+  }
+  
+  interface TaskRef {
+    name: string;
+    notion_url: string;
+  }
+  ```
+</ParamField>
+
+<ParamField path="summary" type="string" required>
+  High-level summary of routing/linking activity. Appears in the "Routing / Linking Summary" section.
+</ParamField>
+
+<ParamField path="needs_review" type="NeedsReview[]" required>
+  Items that couldn't be classified and need manual review.
+  
+  ```typescript
+  interface NeedsReview {
+    description: string;
+  }
+  ```
+</ParamField>
+
+<ParamField path="escalations" type="Escalation[]" required>
+  Hand-offs to other agents in the system.
+  
+  ```typescript
+  interface Escalation {
+    escalated_to: string;
+    escalation_reason: string;
+    escalation_owner: string;
+    handoff_complete: boolean;
+  }
+  ```
+</ParamField>
+
+<ParamField path="target_database" type="TargetDatabase" required>
+  Which database to write to. One of: `docs`, `home_docs`.
+</ParamField>
+
+<ParamField path="doc_type" type="string" required>
+  Value for the "Doc Type" property in Notion (e.g., "Agent Digest").
+</ParamField>
+
+<ParamField path="client_relation_ids" type="string[]">
+  Optional array of Notion page IDs to link in the Client relation property.
+</ParamField>
+
+<ParamField path="project_relation_ids" type="string[]">
+  Optional array of Notion page IDs to link in the Project relation property.
+</ParamField>
+
+## Output Schema
+
+### Success Response
+
+<ResponseField name="success" type="true">
+  Indicates the digest was created successfully.
+</ResponseField>
+
+<ResponseField name="page_url" type="string">
+  The full Notion URL of the created digest page.
+</ResponseField>
+
+<ResponseField name="page_id" type="string">
+  The Notion page ID (32-character hex string).
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  The generated page title (e.g., "🔄 GitHub Sync — 2026-02-28" or "GitHub Sync ERROR — 2026-02-28").
+</ResponseField>
+
+<ResponseField name="is_error_titled" type="boolean">
+  Whether the page title includes "ERROR" (true when status_value is `partial` or `failed`).
+</ResponseField>
+
+<ResponseField name="is_heartbeat" type="boolean">
+  Whether this run was a heartbeat (no flagged items and no tasks created/updated).
+</ResponseField>
+
+### Error Response
+
+<ResponseField name="success" type="false">
+  Indicates the digest creation failed.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message describing what went wrong.
+</ResponseField>
+
+## Example Usage
+
+```typescript
+const result = await worker.execute({
+  agent_name: "GitHub Insyncerator",
+  agent_emoji: "🔄",
+  status_type: "sync",
+  status_value: "complete",
+  run_time_chicago: "2026-02-28T09:00:00-06:00",
+  scope: "All open PRs and recent commits in tracked repos",
+  input_versions: "None",
+  flagged_items: [
+    { 
+      description: "PR #42 needs review", 
+      task_link: "https://www.notion.so/task-abc123" 
+    },
+    { 
+      description: "Spike in failed CI on main", 
+      task_link: "https://www.notion.so/task-def456" 
+    },
+  ],
+  actions_taken: {
+    created_tasks: [
+      { 
+        name: "Review PR #42", 
+        notion_url: "https://www.notion.so/task-abc123" 
+      }
+    ],
+    updated_tasks: [
+      { 
+        name: "Investigate CI failures", 
+        notion_url: "https://www.notion.so/task-def456" 
+      }
+    ],
+  },
+  summary: "Synced 3 repos. 2 items flagged, 1 escalation to Client Repo Auditor.",
+  needs_review: [],
+  escalations: [
+    {
+      escalated_to: "Client Repo Auditor",
+      escalation_reason: "Spike in CI failures may need client repo audit",
+      escalation_owner: "Client Repo Auditor",
+      handoff_complete: false,
+    },
+  ],
+  target_database: "docs",
+  doc_type: "Agent Digest",
+});
+
+if (result.success) {
+  console.log(`Created digest: ${result.page_url}`);
+  console.log(`Title: ${result.title}`);
+  console.log(`Heartbeat: ${result.is_heartbeat}`);
+}
+```
+
+## Behavior Details
+
+### Page Title Rules
+
+The worker automatically generates page titles following these rules:
+
+- **Normal runs**: `{emoji} {digestType} — {date}` (e.g., "🔄 GitHub Sync — 2026-02-28")
+- **Error runs**: `{digestType} ERROR — {date}` (when `status_value` is `partial` or `failed`)
+
+The date is extracted from `run_time_chicago` (first 10 characters).
+
+### Heartbeat Detection
+
+A run is classified as a heartbeat when:
+
+1. `status_type` is explicitly `"heartbeat"`, OR
+2. There are no `flagged_items` AND no tasks in `actions_taken` (empty `created_tasks` and `updated_tasks`)
+
+Heartbeat runs display "Heartbeat: no actionable items" in the content.
+
+### Flagged Items Validation
+
+Each item in `flagged_items` **must** have either:
+- `task_link` — a URL to the tracking task, OR
+- `no_task_reason` — an explanation why no task was created
+
+If any flagged item has neither, the worker returns an error:
+```
+FlaggedItem must have task_link or no_task_reason: "{description}"
+```
+
+### Error Cases
+
+The worker returns `{ success: false, error: "..." }` in these scenarios:
+
+1. **Invalid agent name**: Agent not in the system's valid agent registry
+2. **Missing required fields**: `status_type`, `status_value`, `run_time_chicago`, or `target_database` is missing
+3. **Flagged items validation failure**: A flagged item has neither `task_link` nor `no_task_reason`
+4. **Notion API error**: Network issue, permissions error, or invalid database ID
+
+## Content Structure
+
+The worker creates digest pages with the following sections:
+
+1. **Status line** — Machine-readable format (e.g., "Status: Sync Complete")
+2. **Heartbeat notice** — If applicable
+3. **Run metadata** — Run time, scope, input versions
+4. **Flagged Items** — List with task links or no-task reasons
+5. **Actions Taken** — Created and updated tasks
+6. **Routing / Linking Summary** — The `summary` field
+7. **Unclassified / Needs Review** — Items from `needs_review`
+8. **Escalations / Hand-offs** — Details from `escalations` array

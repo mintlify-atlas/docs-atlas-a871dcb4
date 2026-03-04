@@ -1,97 +1,184 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "JRE Notion Workers"
+description: "TypeScript SDK for agent coordination, governance compliance, and machine-to-machine communication"
+mode: "custom"
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-br from-[#1B5E20] via-[#2E7D32] to-[#1B5E20] dark:from-[#0f1117] dark:via-[#1a3d20] dark:to-[#0f1117] py-20">
+  <div className="absolute inset-0 bg-black/20 dark:bg-black/40"></div>
+  <div className="relative max-w-6xl mx-auto px-6 text-center">
+    <h1 className="text-5xl md:text-6xl font-bold text-white mb-6">
+      JRE Notion Workers
+    </h1>
+    <p className="text-xl md:text-2xl text-white/90 max-w-3xl mx-auto mb-10">
+      Three powerful Notion Workers that enforce governance, reduce agent overhead, and enable reliable machine-to-machine coordination across an 11-agent automation system.
+    </p>
+    <div className="flex flex-wrap gap-4 justify-center">
+      <a 
+        href="/quickstart" 
+        className="inline-flex items-center px-8 py-3 rounded-lg bg-white text-[#2E7D32] font-semibold hover:bg-white/90 transition-colors no-underline"
+      >
+        Get Started
+      </a>
+      <a 
+        href="/api/write-agent-digest" 
+        className="inline-flex items-center px-8 py-3 rounded-lg border-2 border-white/30 bg-white/10 text-white font-semibold hover:bg-white/20 hover:border-white/50 transition-colors no-underline"
+      >
+        Explore API Reference
+      </a>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+## Quick Start
 
-## Make it yours
+Get up and running with JRE Notion Workers in minutes.
 
-Design a docs site that looks great and empowers your users.
+<Steps>
+  <Step title="Install dependencies">
+    Install the required packages using your preferred package manager.
+    
+    <CodeGroup>
+    ```bash npm
+    npm install
+    ```
+    ```bash bun
+    bun install
+    ```
+    </CodeGroup>
+  </Step>
 
-<Columns cols={2}>
+  <Step title="Configure credentials">
+    Set up your environment variables with Notion API credentials.
+    
+    ```bash
+    cp .env.example .env
+    # Edit .env with your NOTION_TOKEN and database IDs
+    ```
+    
+    <Note>
+    Required variables: `NOTION_TOKEN`, `DOCS_DATABASE_ID`, `HOME_DOCS_DATABASE_ID`, `TASKS_DATABASE_ID`
+    </Note>
+  </Step>
+
+  <Step title="Register workers">
+    The three workers are automatically registered when you run the project.
+    
+    ```bash
+    bun run dev
+    ```
+    
+    You can now invoke `write-agent-digest`, `check-upstream-status`, or `create-handoff-marker` from your agents.
+  </Step>
+</Steps>
+
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+
+## Three powerful workers
+
+Explore the core workers that power agent coordination and governance.
+
+<CardGroup cols={3}>
   <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
+    title="Write Agent Digest"
+    icon="file-pen"
+    href="/api/write-agent-digest"
   >
-    Edit your docs locally and preview them in real time.
+    Creates governance-compliant digest pages with automatic status line formatting and section ordering.
   </Card>
   <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
+    title="Check Upstream Status"
+    icon="magnifying-glass"
+    href="/api/check-upstream-status"
   >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+    Finds and parses the most recent digest for dependency tracking and data completeness validation.
   </Card>
   <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
+    title="Create Handoff Marker"
+    icon="right-left"
+    href="/api/create-handoff-marker"
   >
-    Auto-generate API documentation from OpenAPI specifications.
+    Creates structured handoff records with circuit breakers and escalation caps for agent coordination.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+</div>
 
-Everything you need to create world-class documentation.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
 
-<Columns cols={2}>
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Type-safe API" icon="shield-check">
+    Comprehensive TypeScript types with strict validation for all inputs and outputs.
+  </Card>
+  <Card title="Governance enforcement" icon="gavel">
+    Automated status lines, page titles, and section formatting ensure compliance across all agents.
+  </Card>
+  <Card title="Circuit breakers" icon="traffic-light">
+    Prevents duplicate handoffs and caps re-escalations to avoid infinite loops.
+  </Card>
+  <Card title="Node 22+ runtime" icon="node">
+    Built for Node.js 22+ with Bun development support for optimal performance.
+  </Card>
+</CardGroup>
+
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+
+## Explore the documentation
+
+<CardGroup cols={2}>
   <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
+    title="Architecture"
+    icon="sitemap"
+    href="/concepts/architecture"
   >
-    Use MDX to style your docs pages.
+    Understand the layered structure and design principles.
   </Card>
   <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
+    title="Agent system"
+    icon="users-gear"
+    href="/concepts/agent-system"
   >
-    Add sample code to demonstrate how to use your product.
+    Learn how the 11-agent automation system coordinates.
   </Card>
   <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
+    title="Deployment guide"
+    icon="rocket"
+    href="/guides/deployment"
   >
-    Display images and other media.
+    Deploy workers to production with the ntn CLI.
   </Card>
   <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
+    title="Testing"
+    icon="flask"
+    href="/guides/testing"
   >
-    Write once and reuse across your docs.
+    Unit tests, integration tests, and evals for quality assurance.
   </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+</div>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<div className="mt-20 mb-16 max-w-4xl mx-auto px-6">
+  <div className="rounded-2xl border border-gray-200 dark:border-[#27272a] bg-gray-50 dark:bg-[#1a1d27] p-10 text-center">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Ready to build?
+    </h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 mb-8 max-w-2xl mx-auto">
+      Start integrating JRE Notion Workers into your agent automation system today.
+    </p>
+    <a 
+      href="/installation" 
+      className="inline-flex items-center px-8 py-3 rounded-lg bg-[#2E7D32] text-white font-semibold hover:bg-[#1B5E20] transition-colors no-underline"
+    >
+      View installation guide
+    </a>
+  </div>
+</div>

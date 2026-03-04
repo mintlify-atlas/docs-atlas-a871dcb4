@@ -1,0 +1,429 @@
+---
+title: Notion Workers Platform
+description: What Notion Workers are, how they work, and platform-specific design rules
+---
+
+<Warning>
+  **Alpha status:** Notion Workers is currently in alpha. APIs and deployment behavior may change. Always check the [makenotion/workers-template](https://github.com/makenotion/workers-template) README for the latest.
+</Warning>
+
+## What is a Notion Worker?
+
+A Notion Worker is a **small TypeScript program** hosted and executed by Notion's infrastructure. Think of it as a serverless function specifically designed for Notion automation.
+
+<CardGroup cols={2}>
+  <Card title="Managed Runtime" icon="server">
+    Runs on Node.js ≥22 in Notion-controlled infrastructure. You don't manage servers, scaling, or deployment infrastructure.
+  </Card>
+  
+  <Card title="Deploy via CLI" icon="terminal">
+    Deploy using the `ntn` CLI. No Docker, no Kubernetes, no cloud provider setup.
+  </Card>
+  
+  <Card title="Typed I/O" icon="arrows-left-right">
+    Receives typed JSON input and returns typed JSON output. All contracts are explicit.
+  </Card>
+  
+  <Card title="Pre-Authenticated" icon="key">
+    Access a pre-authenticated Notion client via `@notionhq/workers`. No manual token management in code.
+  </Card>
+</CardGroup>
+
+### Key Characteristics
+
+**Workers are NOT long-running servers** - they execute and exit. Think AWS Lambda or Cloudflare Workers:
+
+- Invoked on-demand by external callers (e.g., your agent system)
+- Execute a single operation per invocation
+- Return results synchronously
+- No persistent state between invocations
+
+## Entry Point Contract
+
+JRE Notion Workers uses the **tool-based API**. Each tool is registered with:
+
+1. A JSON schema defining input structure
+2. An `execute` function that processes the input
+3. A typed output specification
+
+### Tool Registration Pattern
+
+In `src/index.ts`:
+
+```typescript
+import { Worker } from '@notionhq/workers';
+
+const worker = new Worker();
+
+worker.tool({
+  name: 'write-agent-digest',
+  schema: {
+    // JSON schema for input validation
+    type: 'object',
+    properties: {
+      agent_name: { type: 'string' },
+      status_type: { type: 'string' },
+      // ...
+    },
+    required: ['agent_name', 'status_type']
+  },
+  async execute(input, context) {
+    // context.notion is the pre-authenticated client
+    const result = await writeAgentDigest(input, context.notion);
+    return result;
+  }
+});
+
+export default worker;
+```
+
+### The Context Object
+
+The `context` parameter passed to `execute` includes:
+
+- `context.notion` - Authenticated `@notionhq/client` instance
+- Environment variables from `process.env`
+- Platform metadata (runtime version, execution ID, etc.)
+
+<Note>
+  Workers automatically receive an authenticated Notion client. You never need to instantiate `new Client()` or pass API tokens in your worker code.
+</Note>
+
+## Workers in This Repository
+
+The JRE Notion Workers project implements three tools:
+
+| Tool name               | Purpose |
+|-------------------------|--------|
+| `write-agent-digest`    | Creates a governance-compliant agent digest page in Docs or Home Docs |
+| `check-upstream-status` | Finds latest digest for an agent and returns structured status |
+| `create-handoff-marker` | Creates handoff record and optionally a Task when escalating between agents |
+
+Each tool lives in `src/workers/<name>.ts` and exports an `execute` function.
+
+## Input/Output Type Design
+
+All types are defined in `src/shared/types.ts`. Each worker follows a consistent pattern.
+
+### Input Types
+
+Every worker has an explicit `*Input` interface:
+
+```typescript
+export interface WriteAgentDigestInput {
+  agent_name: string;
+  status_type: 'sync' | 'snapshot' | 'report';
+  degraded: boolean;
+  sections: DigestSection[];
+  flagged_items: FlaggedItem[];
+  actions_taken: ActionsTaken;
+  data_completeness_notice?: string;
+}
+```
+
+### Output Types
+
+Outputs include a `success` discriminant for type-safe error handling:
+
+```typescript
+export interface WriteAgentDigestOutput {
+  success: boolean;
+  page_id?: string;
+  page_url?: string;
+  error?: string;
+}
+```
+
+### Design Rules for Types
+
+<AccordionGroup>
+  <Accordion title="Include a success discriminant">
+    Use `success: boolean` or similar to allow callers to distinguish success from failure at the type level.
+    
+    ```typescript
+    if (result.success) {
+      // TypeScript knows page_id exists
+      console.log(result.page_id);
+    } else {
+      // TypeScript knows error exists
+      console.log(result.error);
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Return structured errors, never throw">
+    Always return `{ success: false, error: string }` on validation or API failure. Never throw exceptions to the caller.
+    
+    This makes error handling predictable and allows callers to handle failures programmatically.
+  </Accordion>
+  
+  <Accordion title="Never return raw Notion API objects">
+    Always map Notion responses to your own types. This:
+    - Decouples your API from Notion's internal structure
+    - Allows you to evolve your interface independently
+    - Makes documentation clearer for callers
+    
+    ```typescript
+    // ❌ Don't do this
+    return notion.pages.retrieve({ page_id });
+    
+    // ✅ Do this
+    const page = await notion.pages.retrieve({ page_id });
+    return {
+      success: true,
+      page_id: page.id,
+      title: extractTitle(page),
+      created_time: page.created_time
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Authentication Pattern
+
+Authentication is handled entirely through environment variables.
+
+### Required Secrets
+
+| Variable | Purpose |
+|----------|--------|
+| `NOTION_TOKEN` | Notion integration token (full access to target workspace) |
+| `DOCS_DATABASE_ID` | ID of the Docs database (32-char hex, no dashes) |
+| `HOME_DOCS_DATABASE_ID` | ID of the Home Docs database |
+| `TASKS_DATABASE_ID` | ID of the Tasks database (for handoff tasks) |
+
+### Local Development
+
+Use `.env` or `.env.local`:
+
+```bash
+NOTION_TOKEN=secret_xxx
+DOCS_DATABASE_ID=abc123...
+HOME_DOCS_DATABASE_ID=def456...
+TASKS_DATABASE_ID=ghi789...
+```
+
+Load with:
+
+```bash
+bun run dev              # loads .env
+bun run dev:local        # loads .env.local
+bun run dev:1p           # uses 1Password CLI
+```
+
+### Deployed Workers
+
+Set secrets via the `ntn` CLI:
+
+```bash
+ntn workers secrets set NOTION_TOKEN
+ntn workers secrets set DOCS_DATABASE_ID
+ntn workers secrets set HOME_DOCS_DATABASE_ID
+ntn workers secrets set TASKS_DATABASE_ID
+```
+
+Secrets are available as `process.env.*` at runtime.
+
+<Warning>
+  **Never hardcode secrets.** Never log `NOTION_TOKEN`. Use `src/shared/notion-client.ts` helpers (`getNotionClient()`, `getDocsDatabaseId()`, etc.) to access configuration.
+</Warning>
+
+## Worker-Specific Design Rules
+
+The following five rules ensure workers are reliable, predictable, and maintainable:
+
+### 1. Atomic Operations Only
+
+<Card title="Rule" icon="atom">
+  One tool = one concern. Never bundle multiple unrelated operations into a single worker.
+</Card>
+
+This repo keeps `write-agent-digest`, `check-upstream-status`, and `create-handoff-marker` separate. Even though agents often call them in sequence, they remain distinct tools.
+
+**Why?** 
+- Easier to test (one concern per test suite)
+- Easier to debug (failures are isolated)
+- Easier to evolve (change one without affecting others)
+
+### 2. Idempotent by Default
+
+<Card title="Rule" icon="rotate">
+  Same input twice should produce the same result or safely skip. No unintended side effects from retries.
+</Card>
+
+**Examples:**
+- `check-upstream-status` is naturally idempotent (read-only)
+- `create-handoff-marker` uses a circuit breaker to prevent duplicate handoffs within 7 days
+
+**Why?** 
+- Network failures happen - callers may retry
+- Agent runs may be interrupted and restarted
+- Idempotency prevents duplicate tasks, pages, or notifications
+
+### 3. No Side Effects on Dry Run
+
+<Card title="Rule" icon="vial">
+  If a worker supports `dryRun`, it must not write to Notion when `dryRun` is true.
+</Card>
+
+While the current workers don't implement dry-run mode, this rule ensures future workers can be safely tested in production contexts.
+
+### 4. Structured Return Values
+
+<Card title="Rule" icon="file-code">
+  Always return typed objects (e.g., `{ success, page_id?, error? }`) so callers can handle output programmatically.
+</Card>
+
+**Never return:**
+- Bare strings ("Success" / "Error: ...")
+- Raw Notion API responses
+- Exceptions (use `{ success: false, error }` instead)
+
+**Why?**
+- Callers can branch on `success` with type safety
+- Errors include context (which validation failed, which field was missing)
+- Output structure can evolve without breaking callers (add optional fields)
+
+### 5. Timeout-Aware Processing
+
+<Card title="Rule" icon="clock">
+  Workers have an execution time limit. For large datasets, process in batches and return progress if needed.
+</Card>
+
+**Current limit:** Check [makenotion/workers-template](https://github.com/makenotion/workers-template) for the latest (typically 30–60 seconds).
+
+**Strategies:**
+- Keep operations focused (write one digest, check one agent's status)
+- For bulk operations, consider pagination or cursor-based resumption
+- Return partial success with a continuation token if you hit the timeout
+
+<Note>
+  The current JRE workers are designed for single-agent operations and complete well within timeout limits. If you add bulk processing features, implement timeout-aware batching.
+</Note>
+
+## Runtime Environment
+
+### Node.js 22+
+
+Workers execute in a **Node.js ≥22 runtime** managed by Notion. Do not rely on:
+
+- Bun-specific APIs (`Bun.file()`, `Bun.serve()`, etc.)
+- Filesystem writes (workers are ephemeral)
+- Environment variables not set via `ntn workers secrets set`
+
+<Warning>
+  **Bun is for local development only.** While you can use `bun run` and `bun test` locally, deployed workers run in Node. Never use Bun-specific APIs in `src/` files.
+</Warning>
+
+### Available APIs
+
+Workers can use:
+
+- Standard Node.js APIs (fs, path, etc. - but remember workers are stateless)
+- `@notionhq/client` for Notion API calls
+- `date-fns` for date manipulation
+- Any npm package compatible with Node 22 (check before deploying)
+
+### What Workers Cannot Do
+
+- Make outbound HTTP requests (except Notion API via the provided client)
+- Write to disk (no persistent storage between invocations)
+- Access databases other than those specified in environment variables
+- Run indefinitely (timeout limit applies)
+
+## Local Development Loop
+
+Development workflow:
+
+```bash
+# Run the worker locally
+bun run dev
+
+# Run with specific env file
+bun run dev:local   # uses .env.local
+bun run dev:1p      # uses 1Password
+
+# Run tests
+bun test
+bun test --watch
+bun test tests/integration/
+
+# Type checking
+npm run check
+
+# Test connection to Notion
+bun run test:connection
+```
+
+<Note>
+  Never use `ts-node` - use Bun for local execution. Bun has native TypeScript support and is significantly faster.
+</Note>
+
+## Deployment
+
+Deployment checklist:
+
+<Steps>
+  <Step title="Build the project">
+    ```bash
+    npm run build
+    ```
+    
+    Must exit with zero errors. Fix all TypeScript errors before deploying.
+  </Step>
+  
+  <Step title="Run tests">
+    ```bash
+    bun test
+    ```
+    
+    All unit and integration tests must pass.
+  </Step>
+  
+  <Step title="Set secrets">
+    ```bash
+    ntn workers secrets set NOTION_TOKEN
+    ntn workers secrets set DOCS_DATABASE_ID
+    ntn workers secrets set HOME_DOCS_DATABASE_ID
+    ntn workers secrets set TASKS_DATABASE_ID
+    ```
+    
+    Only needed once, or when rotating credentials.
+  </Step>
+  
+  <Step title="Deploy">
+    ```bash
+    ntn workers deploy
+    ```
+    
+    Deploys all tools defined in `src/index.ts`.
+  </Step>
+  
+  <Step title="Verify">
+    ```bash
+    ntn workers list
+    ntn workers invoke write-agent-digest --input '{...}'
+    ntn workers logs
+    ```
+  </Step>
+</Steps>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="Workers Template" icon="github" href="https://github.com/makenotion/workers-template">
+    Official Notion Workers starter template
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Learn about the layered architecture and data flow
+  </Card>
+  
+  <Card title="Agent System" icon="robot" href="/concepts/agent-system">
+    Understand how the 11-agent system uses these workers
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/write-agent-digest">
+    Detailed API documentation for each worker
+  </Card>
+</CardGroup>

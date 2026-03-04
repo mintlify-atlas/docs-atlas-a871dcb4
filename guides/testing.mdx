@@ -1,0 +1,601 @@
+---
+title: 'Testing Guide'
+description: 'Comprehensive testing strategy for JRE Notion Workers including unit, integration, and evaluation tests'
+icon: 'flask'
+---
+
+## Testing Stack Overview
+
+JRE Notion Workers uses a modern, fast testing setup optimized for TypeScript:
+
+- **Test runner:** Bun test (built-in, native TypeScript support — no compile step)
+- **Assertions:** Bun's built-in `expect()` API (Jest-compatible)
+- **Mocking:** `bun:test` `mock()` for adapter and client boundaries
+- **Type checking:** `tsc --noEmit` via `npm run check`
+- **Coverage:** `bun test --coverage`
+
+<Note>
+  Tests run significantly faster in Bun than in Node-based test runners. Unit tests should complete in less than 500ms.
+</Note>
+
+## Running Tests
+
+<CodeGroup>
+
+```bash All tests
+bun test
+```
+
+```bash Watch mode
+bun test --watch
+```
+
+```bash Integration only
+bun test tests/integration/
+```
+
+```bash With coverage
+bun test --coverage
+```
+
+```bash Type check only
+npm run check
+```
+
+```bash With .env.local
+bun run test:local
+```
+
+```bash With 1Password
+bun run test:1p
+```
+
+```bash CI mode (with timeout)
+bun run test:ci
+```
+
+</CodeGroup>
+
+## Test Structure
+
+Tests are organized by type:
+
+```
+tests/
+├── unit/                              # Pure logic tests (no API calls)
+│   ├── write-agent-digest.test.ts
+│   ├── write-agent-digest-schema.test.ts
+│   ├── check-upstream-status.test.ts
+│   ├── create-handoff-marker.test.ts
+│   └── shared/
+│       ├── status-parser.test.ts       # Business logic
+│       ├── date-utils.test.ts
+│       └── agent-config.test.ts
+├── integration/                        # Real Notion API calls
+│   ├── write-agent-digest.integration.test.ts
+│   ├── check-upstream-status.integration.test.ts
+│   └── create-handoff-marker.integration.test.ts
+├── evals/                             # Golden input/output pairs
+│   └── status-lines.eval.ts
+└── fixtures/                          # Shared test data
+    └── mock-inputs.ts
+```
+
+**File naming conventions:**
+
+- Unit tests: `*.test.ts`
+- Integration tests: `*.integration.test.ts`
+- Eval data: `*.eval.ts` (imported by tests, not run directly)
+
+## Unit Tests — Pure Logic Only
+
+Unit tests focus on **shared modules** and **pure helper functions**. They should:
+
+- Have **no network calls** (no real Notion API)
+- Be **fast** (less than 500ms for entire suite)
+- Use **mocks** for external dependencies
+- Test **one concern** per test
+
+### Example: Testing Status Parser
+
+```typescript
+import { describe, expect, it } from 'bun:test';
+import { parseStatusLine, buildStatusLine } from '../../src/shared/status-parser.js';
+
+describe('parseStatusLine', () => {
+  it('parses sync complete', () => {
+    const result = parseStatusLine(['Sync Status: ✅ Complete', 'Run Time: 2026-03-04T10:00:00Z']);
+    expect(result).toMatchObject({ 
+      status_type: 'sync', 
+      status_value: 'complete' 
+    });
+  });
+
+  it('returns null when no status line in first 10 lines', () => {
+    expect(parseStatusLine(['Just content'])).toBeNull();
+  });
+
+  it('parses report failed', () => {
+    const result = parseStatusLine(['Report Status: ❌ Failed']);
+    expect(result).toMatchObject({ 
+      status_type: 'report', 
+      status_value: 'failed' 
+    });
+  });
+});
+
+describe('buildStatusLine', () => {
+  it('formats sync complete', () => {
+    expect(buildStatusLine('sync', 'complete')).toBe('Sync Status: ✅ Complete');
+  });
+
+  it('formats snapshot degraded', () => {
+    expect(buildStatusLine('snapshot', 'degraded')).toBe('Snapshot Status: ⚠️ Degraded');
+  });
+});
+```
+
+### Example: Testing Worker Helpers
+
+```typescript
+import { describe, expect, it } from 'bun:test';
+import { buildPageTitle, isHeartbeat, validateFlaggedItems } from '../../src/workers/write-agent-digest.js';
+
+describe('buildPageTitle', () => {
+  it('uses emoji on normal runs', () => {
+    const title = buildPageTitle({
+      emoji: '🔄',
+      digestType: 'GitHub Sync',
+      date: '2026-02-28',
+      isError: false
+    });
+    expect(title).toBe('🔄 GitHub Sync — 2026-02-28');
+  });
+
+  it('drops emoji and adds ERROR on degraded runs', () => {
+    const title = buildPageTitle({
+      emoji: '🔄',
+      digestType: 'GitHub Sync',
+      date: '2026-02-28',
+      isError: true
+    });
+    expect(title).toBe('GitHub Sync ERROR — 2026-02-28');
+  });
+});
+
+describe('isHeartbeat', () => {
+  it('returns true when sections are empty or summary-only', () => {
+    expect(isHeartbeat([{ heading: 'Summary', content: ['Nothing changed'] }])).toBe(true);
+  });
+
+  it('returns false when flagged items exist', () => {
+    expect(isHeartbeat([], [{ description: 'Issue found' }])).toBe(false);
+  });
+});
+```
+
+## Mocking the Notion Client
+
+Mock at the **boundary** — the `notion` client passed to workers — not Notion SDK internals.
+
+### Creating a Mock Client
+
+```typescript
+import { mock } from 'bun:test';
+
+function createMockNotionClient() {
+  return {
+    pages: {
+      create: mock(async () => ({ 
+        id: 'mock-page-id', 
+        url: 'https://notion.so/mock' 
+      })),
+      retrieve: mock(async () => ({ 
+        id: 'mock', 
+        properties: {} 
+      })),
+      update: mock(async () => ({ id: 'mock' }))
+    },
+    databases: {
+      query: mock(async () => ({ 
+        results: [], 
+        has_more: false 
+      }))
+    },
+    blocks: {
+      children: {
+        list: mock(async () => ({ results: [] })),
+        append: mock(async () => ({}))
+      }
+    }
+  };
+}
+```
+
+### Using Mocks in Tests
+
+```typescript
+import { describe, expect, it } from 'bun:test';
+import { executeWriteAgentDigest } from '../../src/workers/write-agent-digest.js';
+import { createMockNotionClient } from '../fixtures/mock-inputs.js';
+
+describe('write-agent-digest with mocks', () => {
+  it('calls pages.create with correct properties', async () => {
+    const mockClient = createMockNotionClient();
+    const input = {
+      agent_name: 'GitHub Insyncerator',
+      digest_type: 'GitHub Sync',
+      target_db: 'docs',
+      date: '2026-03-04',
+      status_type: 'sync',
+      status_value: 'complete',
+      sections: [{ heading: 'Summary', content: ['All good'] }],
+      flagged_items: []
+    };
+
+    const result = await executeWriteAgentDigest(input, mockClient);
+
+    expect(mockClient.pages.create).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+  });
+});
+```
+
+<Note>
+  Store reusable mock factories in `tests/fixtures/mock-inputs.ts` so multiple tests share the same setup.
+</Note>
+
+## Schema Contract Tests
+
+For each worker, verify the **output shape** on success and failure. This catches schema drift early.
+
+```typescript
+import { describe, expect, it } from 'bun:test';
+
+describe('write-agent-digest output schema', () => {
+  it('returns required fields on success', async () => {
+    const result = await executeWithMock(validInput);
+    expect(result).toMatchObject({
+      success: true,
+      page_url: expect.any(String),
+      page_id: expect.any(String),
+      is_error_titled: expect.any(Boolean),
+      is_heartbeat: expect.any(Boolean)
+    });
+  });
+
+  it('returns success:false + error on validation failure', async () => {
+    const result = await executeWithMock({ ...validInput, agent_name: 'Invalid' });
+    expect(result.success).toBe(false);
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('returns success:false when Notion API fails', async () => {
+    const mockClient = createMockNotionClient();
+    mockClient.pages.create.mockRejectedValue(new Error('API error'));
+    
+    const result = await executeWithMock(validInput, mockClient);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('API error');
+  });
+});
+```
+
+## Integration Tests — Real API Calls
+
+Integration tests call the **real Notion API**. They must:
+
+- Use a **dedicated test database** (never production)
+- Be **guarded** by environment variables
+- **Clean up** after themselves (archive/delete created pages)
+
+### Test Environment Setup
+
+Add to `.env.example` and your test environment:
+
+```bash
+# Testing (integration tests only)
+TEST_NOTION_TOKEN=secret_...
+TEST_DOCS_DATABASE_ID=32charhexid
+```
+
+<Warning>
+  **Never use production credentials in tests.** Create a separate test integration and database.
+</Warning>
+
+### Guarding Integration Tests
+
+Always skip integration tests when `TEST_*` vars are not set:
+
+```typescript
+import { describe, expect, it, afterEach } from 'bun:test';
+import { getNotionClient } from '../../src/shared/notion-client.js';
+
+const TEST_DB = process.env.TEST_DOCS_DATABASE_ID;
+const createdPageIds: string[] = [];
+
+describe.skipIf(!TEST_DB)('write-agent-digest (integration)', () => {
+  afterEach(async () => {
+    // Clean up: archive created pages
+    const notion = getNotionClient();
+    for (const pageId of createdPageIds) {
+      await notion.pages.update({ page_id: pageId, archived: true });
+    }
+    createdPageIds.length = 0;
+  });
+
+  it('creates a page in the test database', async () => {
+    const input = {
+      agent_name: 'GitHub Insyncerator',
+      digest_type: 'GitHub Sync',
+      target_db: 'docs',
+      date: '2026-03-04',
+      status_type: 'sync',
+      status_value: 'complete',
+      sections: [{ heading: 'Summary', content: ['Test page'] }],
+      flagged_items: []
+    };
+
+    const result = await executeWriteAgentDigest(input, getNotionClient());
+
+    expect(result.success).toBe(true);
+    expect(result.page_url).toContain('notion.so');
+    expect(result.page_id).toMatch(/^[a-f0-9]{32}$/);
+
+    createdPageIds.push(result.page_id);
+  });
+});
+```
+
+### Running Integration Tests
+
+<Tabs>
+  <Tab title="With .env or .env.local">
+    ```bash
+    bun test tests/integration/
+    ```
+  </Tab>
+  
+  <Tab title="With 1Password">
+    ```bash
+    op run --env-file=.env.1p -- bun test tests/integration/
+    ```
+  </Tab>
+</Tabs>
+
+If `TEST_DOCS_DATABASE_ID` is not set, integration tests are automatically skipped.
+
+## Evaluation Sets
+
+For **parsing and formatting** logic (status lines, heartbeat detection, etc.), maintain **golden input/output pairs** in `tests/evals/`.
+
+### Creating an Eval File
+
+```typescript
+// tests/evals/status-lines.eval.ts
+export const STATUS_LINE_EVALS = [
+  [['Sync Status: ✅ Complete'], { status_type: 'sync', status_value: 'complete' }],
+  [['Report Status: ❌ Failed'], { status_type: 'report', status_value: 'failed' }],
+  [['Snapshot Status: ⚠️ Degraded'], { status_type: 'snapshot', status_value: 'degraded' }],
+  [['Heartbeat: no actionable items'], null],
+  [[], null]
+] as const;
+```
+
+### Using Evals in Tests
+
+```typescript
+import { describe, expect, it } from 'bun:test';
+import { parseStatusLine } from '../../src/shared/status-parser.js';
+import { STATUS_LINE_EVALS } from '../evals/status-lines.eval.js';
+
+describe('status line parsing evals', () => {
+  for (const [input, expected] of STATUS_LINE_EVALS) {
+    it(`parses: ${input[0] || 'empty'}`, () => {
+      expect(parseStatusLine(input)).toEqual(expected);
+    });
+  }
+});
+```
+
+## Regression Tests
+
+When fixing a bug, add a **regression test** to ensure it doesn't reappear.
+
+```typescript
+describe('regression: validateFlaggedItems', () => {
+  it('rejects items missing both task_link and no_task_reason', () => {
+    const items = [{ description: 'Issue found' }];
+    expect(() => validateFlaggedItems(items)).toThrow('task_link or no_task_reason');
+  });
+});
+```
+
+Name the test with `regression:` prefix and reference the issue number if applicable.
+
+## Performance Targets
+
+Tests should complete within these timeframes:
+
+| Operation | Target | Fail if |
+|-----------|--------|----------|
+| Unit test suite | < 500ms | > 2s |
+| Single Notion API call | < 800ms | > 3s |
+| Full worker execute | < 5s | > 15s |
+| Integration suite | < 30s | > 60s |
+
+**Setting timeouts:**
+
+```bash
+bun test --timeout 10000  # 10 second timeout for slow integration tests
+```
+
+## CI Checklist
+
+Before merging or deploying:
+
+- [ ] `bun test` passes with zero failures
+- [ ] `npm run check` (tsc) exits with no errors
+- [ ] No new `any` types; strict TypeScript preserved
+- [ ] Schema contract tests cover success and validation-failure output shapes
+- [ ] Integration tests guarded by `describe.skipIf` and do not touch production DBs
+- [ ] Regression test added for any bug fix
+- [ ] `TEST_NOTION_TOKEN` and `TEST_DOCS_DATABASE_ID` documented in `.env.example`
+- [ ] Coverage remains above 80% (run `bun test --coverage`)
+
+## Writing Great Tests
+
+### Unit Test Best Practices
+
+<Steps>
+  <Step title="Test one thing per test">
+    Each `it()` block should verify a single behavior:
+    
+    ```typescript
+    // Good
+    it('returns complete when status is ✅', () => { ... });
+    it('returns failed when status is ❌', () => { ... });
+    
+    // Bad
+    it('parses all status values', () => {
+      // Tests 10 different cases in one function
+    });
+    ```
+  </Step>
+  
+  <Step title="Use descriptive test names">
+    Test names should read like documentation:
+    
+    ```typescript
+    // Good
+    it('drops emoji and adds ERROR suffix when isError is true', () => { ... });
+    
+    // Bad
+    it('test title', () => { ... });
+    ```
+  </Step>
+  
+  <Step title="Arrange-Act-Assert pattern">
+    Structure tests clearly:
+    
+    ```typescript
+    it('creates page with correct title', async () => {
+      // Arrange
+      const input = { agent_name: 'Test', ... };
+      const mockClient = createMockNotionClient();
+      
+      // Act
+      const result = await executeWorker(input, mockClient);
+      
+      // Assert
+      expect(result.page_title).toBe('Expected Title');
+    });
+    ```
+  </Step>
+  
+  <Step title="Avoid test interdependence">
+    Each test should run independently. Don't rely on execution order:
+    
+    ```typescript
+    // Bad
+    let sharedState;
+    it('test 1', () => { sharedState = ...; });
+    it('test 2', () => { expect(sharedState)... }); // Depends on test 1
+    
+    // Good
+    it('test 1', () => { const state = ...; ... });
+    it('test 2', () => { const state = ...; ... });
+    ```
+  </Step>
+</Steps>
+
+### Integration Test Best Practices
+
+<Steps>
+  <Step title="Always clean up">
+    Archive or delete pages created during tests:
+    
+    ```typescript
+    afterEach(async () => {
+      for (const id of createdIds) {
+        await notion.pages.update({ page_id: id, archived: true });
+      }
+    });
+    ```
+  </Step>
+  
+  <Step title="Use unique identifiers">
+    Include timestamps or UUIDs in test data to avoid collisions:
+    
+    ```typescript
+    const testDate = `2026-03-04T${Date.now()}`;
+    ```
+  </Step>
+  
+  <Step title="Test error scenarios">
+    Don't just test the happy path:
+    
+    ```typescript
+    it('handles invalid database ID gracefully', async () => {
+      const input = { ...validInput, target_db: 'invalid' };
+      const result = await executeWorker(input);
+      expect(result.success).toBe(false);
+    });
+    ```
+  </Step>
+</Steps>
+
+## Debugging Failed Tests
+
+<Accordion title="Test times out">
+  **Causes:**
+  - Infinite loop
+  - Unresolved promise
+  - Slow Notion API call
+  
+  **Solutions:**
+  1. Add `--timeout 10000` flag
+  2. Mock slow API calls in unit tests
+  3. Check for missing `await` keywords
+</Accordion>
+
+<Accordion title="Mock not called">
+  **Causes:**
+  - Code path not executed
+  - Mock not passed to function under test
+  - Mock created but not injected
+  
+  **Solutions:**
+  1. Verify mock is passed correctly
+  2. Add `console.log()` to trace execution
+  3. Use `expect(mock).toHaveBeenCalledTimes(1)`
+</Accordion>
+
+<Accordion title="Integration test fails with 'unauthorized'">
+  **Causes:**
+  - `TEST_NOTION_TOKEN` not set
+  - Integration lacks database access
+  
+  **Solutions:**
+  1. Verify `TEST_NOTION_TOKEN` in `.env.local`
+  2. Share test database with integration in Notion
+  3. Check token hasn't been revoked
+</Accordion>
+
+<Accordion title="Type errors in test files">
+  **Causes:**
+  - Missing type imports
+  - Incorrect mock shape
+  
+  **Solutions:**
+  1. Run `npm run check` to see TypeScript errors
+  2. Import types from `src/shared/types.js`
+  3. Match mock client shape to real Notion client
+</Accordion>
+
+## Next Steps
+
+- Read [Development Guide](/guides/development) for coding standards
+- Check [Deployment Guide](/guides/deployment) for CI integration
+- Review [API Reference](/api/write-agent-digest) for worker schemas
+- See [TESTING.md](https://github.com/your-repo/jre-notion-workers/blob/main/TESTING.md) for more details

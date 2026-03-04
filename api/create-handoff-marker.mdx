@@ -1,0 +1,330 @@
+---
+title: "create-handoff-marker"
+description: "Creates handoff records and optionally Notion Tasks with circuit breaker protection"
+---
+
+## Overview
+
+The `create-handoff-marker` worker creates a structured handoff record when an agent needs to escalate to another agent. It returns a pre-formatted Escalations block and optionally creates a tracking Task in Notion.
+
+This worker includes built-in **circuit breaker** and **escalation cap** logic to prevent duplicate tasks and runaway escalation loops.
+
+## Input Schema
+
+<ParamField path="source_agent" type="string" required>
+  The name of the agent initiating the handoff. Must be a valid agent name from the system's registry.
+</ParamField>
+
+<ParamField path="target_agent" type="string" required>
+  The name of the agent receiving the handoff. Must be a valid agent name from the system's registry.
+</ParamField>
+
+<ParamField path="escalation_reason" type="string" required>
+  Human-readable explanation of why the handoff is needed (e.g., "Spike in CI failures; needs client repo audit").
+</ParamField>
+
+<ParamField path="source_digest_url" type="string" required>
+  The full Notion URL of the source agent's digest page where this escalation originated.
+</ParamField>
+
+<ParamField path="create_task" type="boolean" required>
+  Whether to create a Notion Task in the Tasks database. If `false`, only the `handoff_block` is returned.
+</ParamField>
+
+<ParamField path="task_priority" type="TaskPriority">
+  Task priority when `create_task` is `true`. One of: `🔴 High`, `🟡 Medium`, `🟢 Low`. **Required** when `create_task` is `true`.
+</ParamField>
+
+<ParamField path="client_relation_ids" type="string[]">
+  Optional array of Notion page IDs to link in the task's Client relation property.
+</ParamField>
+
+<ParamField path="project_relation_ids" type="string[]">
+  Optional array of Notion page IDs to link in the task's Project relation property.
+</ParamField>
+
+## Output Schema
+
+### Success Response
+
+<ResponseField name="success" type="true">
+  Indicates the handoff marker was created successfully.
+</ResponseField>
+
+<ResponseField name="handoff_block" type="string">
+  Pre-formatted text block to paste into the source agent's "Escalations / Hand-offs" section. Contains:
+  - Escalated To: {target_agent}
+  - Escalation Reason: {escalation_reason}
+  - Escalation Owner: {target_agent}
+  - Handoff Complete: No
+  - Source: {source_digest_url}
+</ResponseField>
+
+<ResponseField name="task_created" type="boolean">
+  Whether a Notion Task was created. `false` if `create_task` was false, or if circuit breaker/escalation cap prevented creation.
+</ResponseField>
+
+<ResponseField name="task_url" type="string | null">
+  The full Notion URL of the created task, or `null` if no task was created.
+</ResponseField>
+
+<ResponseField name="task_id" type="string | null">
+  The Notion page ID of the created task (32-character hex), or `null` if no task was created.
+</ResponseField>
+
+<ResponseField name="duplicate_prevented" type="boolean">
+  Whether task creation was skipped because an open handoff task already exists for this source→target pair within the 7-day window.
+</ResponseField>
+
+<ResponseField name="existing_task_url" type="string | null">
+  If `duplicate_prevented` is true, the URL of the existing open task. Otherwise `null`.
+</ResponseField>
+
+<ResponseField name="escalation_capped" type="boolean">
+  Whether task creation was skipped because the escalation cap (2 handoffs within 7 days for this direction) was reached.
+</ResponseField>
+
+<ResponseField name="needs_manual_review" type="boolean">
+  Whether this escalation requires manual review. True when `escalation_capped` is true (indicates a potential escalation loop).
+</ResponseField>
+
+### Error Response
+
+<ResponseField name="success" type="false">
+  Indicates the handoff marker creation failed.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message describing what went wrong.
+</ResponseField>
+
+## Example Usage
+
+```typescript
+const result = await worker.execute({
+  source_agent: "GitHub Insyncerator",
+  target_agent: "Client Repo Auditor",
+  escalation_reason: "Stale spike in CI failures; needs client repo audit",
+  source_digest_url: "https://www.notion.so/github-sync-2026-02-28-abc123",
+  create_task: true,
+  task_priority: "🟡 Medium",
+});
+
+if (result.success) {
+  // Paste result.handoff_block into source agent's Escalations section
+  console.log("Handoff block:\n", result.handoff_block);
+
+  if (result.duplicate_prevented) {
+    console.log("Circuit breaker: using existing task", result.existing_task_url);
+  } else if (result.escalation_capped) {
+    console.log("⚠️ Escalation cap reached — needs manual review");
+  } else if (result.task_created) {
+    console.log("Created handoff task:", result.task_url);
+  }
+}
+```
+
+## Behavior Details
+
+### Circuit Breaker (7-Day Window)
+
+Before creating a task, the worker checks for existing handoff tasks with the same `source_agent → target_agent` direction created within the last **7 days**.
+
+If an **open** task is found (status is not "Done", "Closed", or "Complete"), the worker:
+
+1. Sets `duplicate_prevented` to `true`
+2. Sets `existing_task_url` to the URL of the existing task
+3. Returns without creating a new task
+
+This prevents duplicate tasks when the same escalation happens multiple times in quick succession (e.g., nightly runs flagging the same issue).
+
+#### Circuit Breaker Logic
+
+```typescript
+// Pseudocode
+const existingTasks = queryTasksWithTitle(`Handoff: ${source} → ${target}`)
+  .where(created_time >= now - 7 days)
+  .filter(status != "Done" && status != "Closed" && status != "Complete");
+
+if (existingTasks.length > 0) {
+  return { duplicate_prevented: true, existing_task_url: existingTasks[0].url };
+}
+```
+
+### Escalation Cap (Max 2 per Direction)
+
+After checking for open tasks, the worker counts **all** handoff tasks (open or closed) for the same `source_agent → target_agent` direction within the 7-day window.
+
+If the count reaches or exceeds **2**, the worker:
+
+1. Sets `escalation_capped` to `true`
+2. Sets `needs_manual_review` to `true`
+3. Returns without creating a new task
+
+This cap prevents escalation loops where two agents repeatedly hand off to each other.
+
+#### Escalation Cap Logic
+
+```typescript
+// Pseudocode
+const allTasksInWindow = queryTasksWithTitle(`Handoff: ${source} → ${target}`)
+  .where(created_time >= now - 7 days);
+
+if (allTasksInWindow.length >= 2) {
+  return { escalation_capped: true, needs_manual_review: true };
+}
+```
+
+### Task Creation
+
+When `create_task` is `true` and both the circuit breaker and escalation cap allow it, the worker creates a Notion Task with:
+
+- **Title**: `Handoff: {source_agent} → {target_agent} — {due_date}`
+- **Priority**: From `task_priority` input
+- **Due Date**: Next business day (Monday-Friday, skips weekends)
+- **Description**: `Escalation from {source_agent}. Reason: {escalation_reason}. Source digest: {source_digest_url}`
+- **Client/Project Relations**: From `client_relation_ids` and `project_relation_ids` if provided
+
+The task is created in the Tasks database (ID from `TASKS_DATABASE_ID` environment variable).
+
+### When Flags Are Set
+
+| Flag | Condition | Meaning | Action |
+|------|-----------|---------|--------|
+| `duplicate_prevented` | Open task exists within 7 days | Circuit breaker triggered | Use `existing_task_url` in digest |
+| `escalation_capped` | ≥2 tasks (any status) within 7 days | Escalation cap reached | Flag item as "Needs Manual Review" |
+| `needs_manual_review` | `escalation_capped` is true | Potential escalation loop | Human should investigate |
+
+## Error Cases
+
+The worker returns `{ success: false, error: "..." }` in these scenarios:
+
+1. **Invalid source_agent**: Agent name not in the system's registry
+2. **Invalid target_agent**: Agent name not in the system's registry
+3. **Missing required fields**: `escalation_reason` or `source_digest_url` is empty
+4. **Missing task_priority**: `create_task` is `true` but `task_priority` is not provided
+5. **Notion API error**: Network issue, permissions error, or invalid database ID during task creation
+
+## Integration Pattern
+
+### In Your Agent's Digest Logic
+
+```typescript
+// 1. Detect escalation condition
+if (needsEscalation) {
+  // 2. Create handoff marker
+  const handoff = await createHandoffMarker({
+    source_agent: "GitHub Insyncerator",
+    target_agent: "Client Repo Auditor",
+    escalation_reason: "Spike in CI failures on main branch",
+    source_digest_url: digestUrl, // from write-agent-digest result
+    create_task: true,
+    task_priority: "🟡 Medium",
+    client_relation_ids: ["abc123"], // if applicable
+  });
+
+  if (!handoff.success) {
+    console.error("Handoff failed:", handoff.error);
+    // Handle error (maybe add to needs_review instead)
+  } else {
+    // 3. Add handoff_block to your escalations array
+    const escalationText = handoff.handoff_block;
+
+    if (handoff.duplicate_prevented) {
+      // 4a. Use existing task URL in task_link
+      flaggedItems.push({
+        description: "Escalation: Client Repo Auditor (existing task)",
+        task_link: handoff.existing_task_url,
+      });
+    } else if (handoff.escalation_capped) {
+      // 4b. Flag for manual review
+      needsReview.push({
+        description: `⚠️ Escalation cap reached: ${source} → ${target}. Needs manual review.`,
+      });
+    } else if (handoff.task_created) {
+      // 4c. Use newly created task URL
+      flaggedItems.push({
+        description: "Escalation: Client Repo Auditor",
+        task_link: handoff.task_url,
+      });
+    }
+
+    // 5. Parse handoff_block into Escalation object for write-agent-digest
+    escalations.push({
+      escalated_to: "Client Repo Auditor",
+      escalation_reason: "Spike in CI failures on main branch",
+      escalation_owner: "Client Repo Auditor",
+      handoff_complete: false,
+    });
+  }
+}
+```
+
+## Use Cases
+
+### Single Escalation with Task
+
+```typescript
+const result = await createHandoffMarker({
+  source_agent: "Time Log Auditor",
+  target_agent: "Project Tracker",
+  escalation_reason: "Missing time entries for Project X",
+  source_digest_url: "https://www.notion.so/time-audit-2026-03-01",
+  create_task: true,
+  task_priority: "🔴 High",
+  project_relation_ids: ["proj123"],
+});
+```
+
+### Handoff Without Task (Just Documentation)
+
+```typescript
+const result = await createHandoffMarker({
+  source_agent: "Docs Librarian",
+  target_agent: "Client Health Scorecard",
+  escalation_reason: "New client onboarding doc needs scorecard review",
+  source_digest_url: "https://www.notion.so/docs-snapshot-2026-03-01",
+  create_task: false, // Just the handoff_block, no task
+});
+
+// Use result.handoff_block in the escalations section of write-agent-digest
+```
+
+### Handling Circuit Breaker
+
+```typescript
+const result = await createHandoffMarker({
+  source_agent: "GitHub Insyncerator",
+  target_agent: "Client Repo Auditor",
+  escalation_reason: "Same CI spike as yesterday",
+  source_digest_url: "https://www.notion.so/github-sync-2026-03-02",
+  create_task: true,
+  task_priority: "🟡 Medium",
+});
+
+if (result.duplicate_prevented) {
+  console.log("Reusing existing task:", result.existing_task_url);
+  // Link to existing_task_url instead of creating duplicate
+}
+```
+
+### Handling Escalation Cap
+
+```typescript
+const result = await createHandoffMarker({
+  source_agent: "Project Tracker",
+  target_agent: "Time Log Auditor",
+  escalation_reason: "Still missing time entries",
+  source_digest_url: "https://www.notion.so/project-report-2026-03-03",
+  create_task: true,
+  task_priority: "🔴 High",
+});
+
+if (result.escalation_capped) {
+  console.warn("⚠️ Escalation cap reached — manual review required");
+  // Flag in needs_review instead of escalations
+  needsReview.push({
+    description: "Escalation loop: Project Tracker ↔ Time Log Auditor. Needs governance review.",
+  });
+}
+```

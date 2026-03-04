@@ -1,0 +1,546 @@
+---
+title: 'Development Guide'
+description: 'Development workflow, project structure, and code standards for JRE Notion Workers'
+icon: 'code'
+---
+
+## Local Development Loop
+
+JRE Notion Workers uses **Bun for local development** and **Node.js for deployment**. This gives you:
+
+- Fast native TypeScript execution (no compile step)
+- Instant test feedback
+- Production-compatible runtime (Node 22+)
+
+<Warning>
+  **Critical rule:** Never use Bun-specific APIs (`Bun.file()`, `Bun.serve()`, etc.) in worker source code. These won't exist when deployed to Notion's Node.js runtime.
+</Warning>
+
+### Starting Local Development
+
+<CodeGroup>
+
+```bash Standard (uses .env)
+bun run dev
+```
+
+```bash With .env.local
+bun run dev:local
+```
+
+```bash With 1Password
+bun run dev:1p
+```
+
+```bash Direct execution
+bun run src/index.ts
+```
+
+</CodeGroup>
+
+### Development Commands
+
+| Command | Purpose |
+|---------|----------|
+| `bun run dev` | Run workers locally |
+| `bun test` | Run all tests |
+| `bun test --watch` | Run tests in watch mode |
+| `npm run check` | TypeScript type checking |
+| `bun test --coverage` | Generate coverage report |
+| `npm run build` | Compile TypeScript for deployment |
+
+<Note>
+  Use `bun` for development commands (dev, test) and `npm` for build/deploy to ensure Node compatibility.
+</Note>
+
+## Project Structure
+
+The repository follows a clear separation between worker logic, shared utilities, and tests:
+
+```
+jre-notion-workers/
+├── src/
+│   ├── index.ts              # Worker registration (Worker + .tool())
+│   ├── shared/               # Reusable business logic
+│   │   ├── types.ts          # TypeScript interfaces
+│   │   ├── notion-client.ts  # Notion API client factory
+│   │   ├── agent-config.ts   # Agent name → digest type mapping
+│   │   ├── status-parser.ts  # Status line parsing/formatting
+│   │   ├── date-utils.ts     # Date formatting utilities
+│   │   └── block-builder.ts  # Notion block construction
+│   └── workers/
+│       ├── write-agent-digest.ts      # Creates digest pages
+│       ├── check-upstream-status.ts   # Checks agent status
+│       └── create-handoff-marker.ts   # Manages handoffs
+├── tests/
+│   ├── unit/                 # Pure logic tests (no API calls)
+│   ├── integration/          # Real Notion API tests
+│   ├── evals/                # Golden input/output pairs
+│   └── fixtures/             # Shared test data
+├── .examples/                # Example payloads (documentation)
+├── scripts/                  # Utility scripts (load-secrets.sh)
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+### Key Directories
+
+<Accordion title="src/shared/">
+  **Purpose:** Reusable business logic that is unit-tested.
+  
+  Pure functions for:
+  - Parsing and formatting (status lines, dates)
+  - Validation (flagged items, agent names)
+  - Building Notion blocks
+  - Client initialization
+  
+  **Rules:**
+  - No direct Notion API calls in pure logic functions
+  - All functions must be unit-testable without mocks
+  - Export types from `types.ts`
+</Accordion>
+
+<Accordion title="src/workers/">
+  **Purpose:** Worker implementations that orchestrate logic.
+  
+  Each worker:
+  1. Validates input against schema
+  2. Calls shared logic from `src/shared/`
+  3. Makes Notion API calls
+  4. Returns structured result
+  
+  **Rules:**
+  - Always wrap API calls in try/catch
+  - Return `{ success: false, error }` on failure
+  - Never throw to the caller
+</Accordion>
+
+<Accordion title="tests/">
+  **Purpose:** Comprehensive test coverage.
+  
+  - `unit/` — Fast tests for shared logic (no network)
+  - `integration/` — Tests against real Notion API (guarded by `TEST_*` env vars)
+  - `evals/` — Golden test data for parsers/formatters
+  - `fixtures/` — Reusable mock factories
+  
+  See [Testing Guide](/guides/testing) for details.
+</Accordion>
+
+## Module System
+
+This project uses **ECMAScript Modules (ESM)**:
+
+- `"type": "module"` in `package.json`
+- **Always use `.js` extensions** in import paths (TypeScript NodeNext resolution)
+
+### Import Pattern
+
+```typescript
+// ✅ Correct — use .js extension
+import { getNotionClient } from "../shared/notion-client.js";
+import type { AgentDigestInput } from "../shared/types.js";
+
+// ❌ Wrong — missing .js extension
+import { getNotionClient } from "../shared/notion-client";
+```
+
+<Warning>
+  TypeScript NodeNext resolution requires `.js` extensions even though files are `.ts`. This ensures Node.js can resolve modules at runtime.
+</Warning>
+
+## Code Standards
+
+### Naming Conventions
+
+| Type | Convention | Example |
+|------|------------|----------|
+| Files | `kebab-case.ts` | `status-parser.ts` |
+| Functions/Variables | `camelCase` | `getNotionClient()` |
+| Types/Interfaces | `PascalCase` | `AgentDigestInput` |
+| Constants | `SCREAMING_SNAKE_CASE` | `DOCS_DATABASE_ID` |
+| Notion IDs | 32-char hex (no dashes) | `a1b2c3d4e5f6...` |
+
+### Type Safety Rules
+
+This project uses **strict TypeScript** with no compromises:
+
+<Steps>
+  <Step title="strict: true — always">
+    Never disable strict mode or individual strict flags.
+  </Step>
+  
+  <Step title="No 'any' type">
+    Use `unknown` and narrow with type guards:
+    
+    ```typescript
+    // ✅ Good
+    function process(data: unknown) {
+      if (typeof data === 'string') {
+        return data.toUpperCase();
+      }
+    }
+    
+    // ❌ Bad
+    function process(data: any) {
+      return data.toUpperCase();
+    }
+    ```
+  </Step>
+  
+  <Step title="No non-null assertions on API responses">
+    ```typescript
+    // ✅ Good
+    const page = await notion.pages.retrieve({ page_id });
+    if ('properties' in page) {
+      const title = page.properties.Title;
+    }
+    
+    // ❌ Bad
+    const title = page.properties.Title!;
+    ```
+  </Step>
+  
+  <Step title="Explicit return types for async functions">
+    ```typescript
+    // ✅ Good
+    async function fetchData(): Promise<Result> {
+      // ...
+    }
+    
+    // ❌ Bad (implicit return type)
+    async function fetchData() {
+      // ...
+    }
+    ```
+  </Step>
+</Steps>
+
+### Pure Logic Separation
+
+Business logic lives in `src/shared/` and is **pure** (no side effects):
+
+```typescript
+// src/shared/status-parser.ts — Pure logic
+export function buildStatusLine(
+  statusType: 'sync' | 'snapshot' | 'report',
+  statusValue: 'complete' | 'degraded' | 'failed'
+): string {
+  const emoji = statusValue === 'complete' ? '✅' 
+    : statusValue === 'degraded' ? '⚠️' : '❌';
+  const label = statusType.charAt(0).toUpperCase() + statusType.slice(1);
+  const value = statusValue.charAt(0).toUpperCase() + statusValue.slice(1);
+  return `${label} Status: ${emoji} ${value}`;
+}
+```
+
+```typescript
+// src/workers/write-agent-digest.ts — Orchestration
+import { buildStatusLine } from '../shared/status-parser.js';
+
+export async function execute(input: Input, context: Context) {
+  // Validate input
+  // Call pure logic
+  const statusLine = buildStatusLine(input.status_type, input.status_value);
+  // Make Notion API calls
+  // Return structured result
+}
+```
+
+**Why this matters:**
+
+- Pure functions are **easy to unit test** (no mocks needed)
+- Workers become **thin orchestration layers**
+- Business logic is **reusable** across workers
+
+## Notion SDK Patterns
+
+### Client Initialization
+
+Always use the shared client factory — never instantiate `Client` directly:
+
+```typescript
+// ✅ Good
+import { getNotionClient, getDocsDatabaseId } from '../shared/notion-client.js';
+
+const notion = getNotionClient();
+const dbId = getDocsDatabaseId();
+```
+
+```typescript
+// ❌ Bad
+import { Client } from '@notionhq/client';
+
+const notion = new Client({ auth: process.env.NOTION_TOKEN });
+const dbId = process.env.DOCS_DATABASE_ID;
+```
+
+**Benefits:**
+
+- Centralized error handling for missing credentials
+- Easier to mock in tests
+- Type-safe environment variable access
+
+### Error Handling
+
+Wrap all Notion API calls in try/catch. Return errors — don't throw:
+
+```typescript
+// ✅ Good
+try {
+  const page = await notion.pages.create(params);
+  return { success: true, page_id: page.id, page_url: page.url };
+} catch (err) {
+  return { 
+    success: false, 
+    error: err instanceof Error ? err.message : 'Unknown error' 
+  };
+}
+```
+
+```typescript
+// ❌ Bad
+const page = await notion.pages.create(params);
+return { success: true, page_id: page.id };
+// Error propagates to caller
+```
+
+### Input/Output Design
+
+All worker inputs and outputs must be **JSON-serializable**:
+
+<Note>
+  No `Date` objects, `Map`, `Set`, or functions in input/output. Use strings for dates (ISO 8601).
+</Note>
+
+```typescript
+// ✅ Good
+interface Input {
+  agent_name: string;
+  date: string;  // "2026-03-04"
+  status_type: 'sync' | 'snapshot' | 'report';
+}
+
+// ❌ Bad
+interface Input {
+  agent_name: string;
+  date: Date;  // Not JSON-serializable
+  process: () => void;  // Functions not allowed
+}
+```
+
+## Environment & Secrets
+
+Secrets are read from `process.env`. Never hardcode credentials:
+
+```typescript
+// ✅ Good
+const token = process.env.NOTION_TOKEN;
+if (!token) {
+  throw new Error('NOTION_TOKEN is required');
+}
+
+// ❌ Bad
+const token = 'secret_abc123...';  // Never hardcode
+```
+
+### Required Environment Variables
+
+| Variable | Purpose | Set via |
+|----------|---------|----------|
+| `NOTION_TOKEN` | Notion API auth | `.env` or `ntn workers secrets set` |
+| `DOCS_DATABASE_ID` | Target DB for docs digests | Same |
+| `HOME_DOCS_DATABASE_ID` | Target DB for home digests | Same |
+| `TASKS_DATABASE_ID` | Target DB for handoff tasks | Same |
+
+<Warning>
+  - Never log `NOTION_TOKEN`
+  - Document all env vars in `.env.example`
+  - Use separate `TEST_*` vars for integration tests
+</Warning>
+
+## Worker Scope
+
+This repository enforces strict boundaries:
+
+**Allowed operations:**
+- ✅ Read from: Docs database, Home Docs database
+- ✅ Write to: Docs database, Home Docs database, Tasks database
+- ✅ External calls: Notion API only
+
+**Prohibited operations:**
+- ❌ Accessing databases not declared in env
+- ❌ Making HTTP calls to non-Notion services
+- ❌ Reading/writing files on the filesystem
+- ❌ Using Bun-specific APIs
+
+<Note>
+  Any scope expansion requires governance review and documentation update.
+</Note>
+
+## Development Best Practices
+
+### 1. Test-Driven Development
+
+<Steps>
+  <Step title="Write the test first">
+    Define expected behavior in a unit test:
+    
+    ```typescript
+    it('formats complete status with checkmark emoji', () => {
+      expect(buildStatusLine('sync', 'complete'))
+        .toBe('Sync Status: ✅ Complete');
+    });
+    ```
+  </Step>
+  
+  <Step title="Implement minimal logic">
+    Write just enough code to pass the test.
+  </Step>
+  
+  <Step title="Refactor">
+    Clean up code while keeping tests green.
+  </Step>
+</Steps>
+
+### 2. Use Watch Mode
+
+Run tests in watch mode for instant feedback:
+
+```bash
+bun test --watch
+```
+
+Tests re-run automatically when you save files.
+
+### 3. Type Check Frequently
+
+```bash
+npm run check
+```
+
+Catch type errors before running tests.
+
+### 4. Commit Small, Tested Changes
+
+- Commit after each working feature
+- Ensure tests pass before committing
+- Write descriptive commit messages:
+
+```bash
+# Good
+git commit -m "Add circuit breaker to create-handoff-marker"
+
+# Bad
+git commit -m "fix stuff"
+```
+
+## Debugging Tips
+
+<Accordion title="TypeScript errors in imports">
+  **Cause:** Missing `.js` extension in import path.
+  
+  **Solution:** Always use `.js` even for `.ts` files:
+  ```typescript
+  import { foo } from './module.js';  // Not './module.ts'
+  ```
+</Accordion>
+
+<Accordion title="Environment variables not loading">
+  **Cause:** Wrong env file or missing file.
+  
+  **Solutions:**
+  1. Check file exists: `ls -la .env*`
+  2. Use correct command:
+     - `bun run dev` → loads `.env`
+     - `bun run dev:local` → loads `.env.local`
+     - `bun run dev:1p` → uses 1Password
+</Accordion>
+
+<Accordion title="Notion API returns 'unauthorized'">
+  **Cause:** Token invalid or database not shared with integration.
+  
+  **Solutions:**
+  1. Verify `NOTION_TOKEN` is set: `echo $NOTION_TOKEN`
+  2. Share databases with integration in Notion UI
+  3. Check token hasn't been revoked
+</Accordion>
+
+<Accordion title="Tests fail with 'object_not_found'">
+  **Cause:** Using production IDs in test env or vice versa.
+  
+  **Solution:**
+  - Unit tests: Use mocks (no real IDs needed)
+  - Integration tests: Set `TEST_DOCS_DATABASE_ID` to test DB
+</Accordion>
+
+## Code Review Checklist
+
+Before submitting a PR:
+
+- [ ] All tests pass (`bun test`)
+- [ ] Type check passes (`npm run check`)
+- [ ] No `any` types introduced
+- [ ] Pure logic separated into `src/shared/`
+- [ ] Error handling: try/catch on all Notion calls
+- [ ] No Bun-specific APIs used
+- [ ] Imports use `.js` extensions
+- [ ] Environment variables not hardcoded
+- [ ] New env vars documented in `.env.example`
+- [ ] Tests added for new functionality
+- [ ] Integration tests guarded by `describe.skipIf`
+
+## Common Patterns
+
+### Building Notion Blocks
+
+Use the block builder for consistent formatting:
+
+```typescript
+import { buildParagraph, buildHeading } from '../shared/block-builder.js';
+
+const blocks = [
+  buildHeading(2, 'Summary'),
+  buildParagraph('All systems operational.')
+];
+```
+
+### Validating Input
+
+```typescript
+function validateInput(input: unknown): Result<ValidInput> {
+  if (!input || typeof input !== 'object') {
+    return { success: false, error: 'Input must be an object' };
+  }
+  
+  const { agent_name } = input as any;
+  if (typeof agent_name !== 'string') {
+    return { success: false, error: 'agent_name must be a string' };
+  }
+  
+  return { success: true, data: input as ValidInput };
+}
+```
+
+### Querying Recent Pages
+
+```typescript
+const response = await notion.databases.query({
+  database_id: dbId,
+  filter: {
+    property: 'Agent',
+    select: { equals: agentName }
+  },
+  sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+  page_size: 1
+});
+
+const latestPage = response.results[0] || null;
+```
+
+## Next Steps
+
+- Review [Testing Guide](/guides/testing) for test patterns
+- See [Deployment Guide](/guides/deployment) for publishing workers
+- Check [API Reference](/api/write-agent-digest) for worker schemas
+- Read [AGENTS.md](https://github.com/your-repo/jre-notion-workers/blob/main/AGENTS.md) for detailed standards

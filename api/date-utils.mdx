@@ -1,0 +1,326 @@
+---
+title: "Date Utilities"
+description: "Date formatting, parsing, and calculation utilities for Chicago timezone"
+---
+
+Date and time utilities for formatting run times, calculating age, and determining next business days. All timestamps use America/Chicago timezone.
+
+## Constants
+
+```typescript
+const CHICAGO = "America/Chicago";
+```
+
+All date operations in this module use the America/Chicago (Central Time) timezone.
+
+## Functions
+
+### formatRunTime
+
+Formats an ISO datetime string to the standard run time format.
+
+```typescript
+function formatRunTime(isoDate: string): string
+```
+
+**Parameters:**
+- `isoDate` - ISO 8601 datetime string (e.g., `"2026-03-04T14:30:00Z"`)
+
+**Returns:**
+- Formatted string: `"YYYY-MM-DD HH:mm (America/Chicago)"`
+- Returns original input if parsing fails
+
+**Example:**
+
+```typescript
+import { formatRunTime } from "./date-utils.js";
+
+formatRunTime("2026-03-04T14:30:00Z");
+// "2026-03-04 08:30 (America/Chicago)"
+// (14:30 UTC = 08:30 CST, assuming CST offset)
+
+formatRunTime(new Date().toISOString());
+// "2026-03-04 15:45 (America/Chicago)"
+```
+
+<Note>
+The output uses 24-hour format (HH:mm) and explicitly includes the timezone suffix for clarity.
+</Note>
+
+### parseRunTimeString
+
+Parses a formatted run time string back to a Date object.
+
+```typescript
+function parseRunTimeString(runTimeStr: string): Date | null
+```
+
+**Parameters:**
+- `runTimeStr` - Run time string (format: `"YYYY-MM-DD HH:mm ..."` or similar)
+
+**Returns:**
+- `Date` object in Chicago timezone
+- `null` if parsing fails
+
+**Example:**
+
+```typescript
+import { parseRunTimeString } from "./date-utils.js";
+
+const date = parseRunTimeString("2026-03-04 08:30 (America/Chicago)");
+// Date object representing 2026-03-04 08:30 CST
+
+const invalid = parseRunTimeString("invalid date");
+// null
+```
+
+<Note>
+This function uses a regex to extract `YYYY-MM-DD HH:mm` and assumes CST offset (-06:00). It handles both single-digit and double-digit hours.
+</Note>
+
+**Regex Pattern:**
+
+```typescript
+/(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})/
+```
+
+### hoursAgo
+
+Calculates hours elapsed since an ISO datetime.
+
+```typescript
+function hoursAgo(isoDate: string): number
+```
+
+**Parameters:**
+- `isoDate` - ISO 8601 datetime string
+
+**Returns:**
+- Number of hours elapsed (integer)
+- `Infinity` if parsing fails
+
+**Example:**
+
+```typescript
+import { hoursAgo } from "./date-utils.js";
+
+const timestamp = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+// 3 hours ago
+
+hoursAgo(timestamp);
+// 3
+
+hoursAgo("2026-03-04T08:00:00Z");
+// Hours between 2026-03-04 08:00 UTC and now
+```
+
+<Note>
+Returns `Infinity` for invalid dates, which is useful for age threshold checks (ensures stale detection).
+</Note>
+
+### nextBusinessDay
+
+Calculates the next business day (Monday through Friday).
+
+```typescript
+function nextBusinessDay(from?: Date): Date
+```
+
+**Parameters:**
+- `from` - Optional starting date (defaults to today)
+
+**Returns:**
+- Next business day as a `Date` object
+- Skips weekends (Saturday = 6, Sunday = 0)
+
+**Example:**
+
+```typescript
+import { nextBusinessDay } from "./date-utils.js";
+
+// If today is Friday, March 7, 2026
+const next = nextBusinessDay();
+// Monday, March 10, 2026
+
+// If today is Wednesday, March 4, 2026
+const next = nextBusinessDay();
+// Thursday, March 5, 2026
+
+// From a specific date
+const start = new Date("2026-03-07"); // Saturday
+const next = nextBusinessDay(start);
+// Monday, March 9, 2026
+```
+
+<Note>
+This function does **not** account for holidays—only weekends.
+</Note>
+
+## Usage Patterns
+
+### Creating Digest Run Time
+
+```typescript
+import { formatRunTime } from "./date-utils.js";
+
+const runTime = formatRunTime(new Date().toISOString());
+// "2026-03-04 15:45 (America/Chicago)"
+
+const input = {
+  agent_name: "Inbox Manager",
+  run_time_chicago: new Date().toISOString(),
+  // ... other fields
+};
+
+const formattedForDisplay = formatRunTime(input.run_time_chicago);
+```
+
+### Checking Digest Freshness
+
+```typescript
+import { parseRunTimeString, hoursAgo } from "./date-utils.js";
+
+function isDigestStale(runTimeStr: string, maxAgeHours: number): boolean {
+  const date = parseRunTimeString(runTimeStr);
+  if (!date) return true; // Treat unparseable as stale
+  
+  const age = hoursAgo(date.toISOString());
+  return age > maxAgeHours;
+}
+
+// Example usage
+const digestRunTime = "2026-03-04 08:30 (America/Chicago)";
+const isStale = isDigestStale(digestRunTime, 24);
+```
+
+### Age-Based Status
+
+```typescript
+import { hoursAgo, parseRunTimeString } from "./date-utils.js";
+
+function getAgeStatus(runTimeStr: string) {
+  const date = parseRunTimeString(runTimeStr);
+  if (!date) return "unknown";
+  
+  const age = hoursAgo(date.toISOString());
+  
+  if (age < 1) return "fresh";
+  if (age < 24) return "recent";
+  if (age < 72) return "aging";
+  return "stale";
+}
+```
+
+### Task Due Date Calculation
+
+```typescript
+import { nextBusinessDay } from "./date-utils.js";
+
+function getTaskDueDate(priority: string): Date {
+  switch (priority) {
+    case "🔴 High":
+      return nextBusinessDay(); // Tomorrow (or next Monday if weekend)
+    case "🟡 Medium":
+      return nextBusinessDay(nextBusinessDay()); // Two business days
+    case "🟢 Low":
+    default:
+      // Three business days
+      let date = new Date();
+      for (let i = 0; i < 3; i++) {
+        date = nextBusinessDay(date);
+      }
+      return date;
+  }
+}
+```
+
+### Complete Staleness Check
+
+```typescript
+import { parseRunTimeString, hoursAgo } from "./date-utils.js";
+
+interface FreshnessCheck {
+  is_stale: boolean;
+  age_hours: number | null;
+  age_description: string;
+}
+
+function checkFreshness(
+  runTimeStr: string | null,
+  maxAgeHours: number
+): FreshnessCheck {
+  if (!runTimeStr) {
+    return {
+      is_stale: true,
+      age_hours: null,
+      age_description: "No run time found"
+    };
+  }
+  
+  const date = parseRunTimeString(runTimeStr);
+  if (!date) {
+    return {
+      is_stale: true,
+      age_hours: null,
+      age_description: "Invalid run time format"
+    };
+  }
+  
+  const ageHours = hoursAgo(date.toISOString());
+  const isStale = ageHours > maxAgeHours;
+  
+  return {
+    is_stale: isStale,
+    age_hours: Math.round(ageHours),
+    age_description: isStale
+      ? `Digest is ${Math.round(ageHours)}h old (max: ${maxAgeHours}h)`
+      : `Digest is ${Math.round(ageHours)}h old`
+  };
+}
+```
+
+## Implementation Details
+
+### Time Zone Handling
+
+All functions use `America/Chicago` (Central Time):
+
+- **CST (Central Standard Time):** UTC-6 (typically November to March)
+- **CDT (Central Daylight Time):** UTC-5 (typically March to November)
+
+The `Intl.DateTimeFormat` API handles DST transitions automatically.
+
+### Date Parsing
+
+The `parseRunTimeString` function:
+
+1. Extracts `YYYY-MM-DD HH:mm` via regex
+2. Constructs ISO string: `YYYY-MM-DDTHH:mm:00-06:00`
+3. Pads single-digit hours to two digits
+4. Assumes CST offset (-06:00)
+
+### Business Day Logic
+
+```typescript
+// Sunday = 0, Saturday = 6
+if (day === 0) d = addDays(d, 1);  // Sunday → Monday
+if (day === 6) d = addDays(d, 2);  // Saturday → Monday
+```
+
+## Dependencies
+
+This module uses `date-fns` for date manipulation:
+
+```typescript
+import { addDays, differenceInHours, parseISO } from "date-fns";
+```
+
+- `parseISO` - Parse ISO 8601 strings
+- `differenceInHours` - Calculate hour difference
+- `addDays` - Add days to a date
+
+## Related
+
+- [Status Parser](/api/status-parser) - Uses these utilities for run time parsing
+- [write-agent-digest](/api/write-agent-digest) - Uses `formatRunTime`
+- [check-upstream-status](/api/check-upstream-status) - Uses `hoursAgo` for staleness checks

@@ -1,0 +1,240 @@
+---
+title: "Agent Configuration"
+description: "Agent name mappings, digest patterns, and target databases"
+---
+
+Configuration constants that map agent names to their digest title patterns and target databases. Used by `check-upstream-status` and `write-agent-digest` workers.
+
+## Constants
+
+### VALID_AGENT_NAMES
+
+Array of all recognized agent names in the system.
+
+```typescript
+export const VALID_AGENT_NAMES: string[];
+```
+
+**Current valid agents:**
+
+```typescript
+[
+  "Inbox Manager",
+  "Personal Ops Manager",
+  "GitHub Insyncerator",
+  "Client Repo Auditor",
+  "Docs Librarian",
+  "VEP Weekly Reporter",
+  "Home & Life Watcher",
+  "Template Freshness Watcher",
+  "Time Log Auditor",
+  "Client Health Scorecard",
+  "Morning Briefing"
+]
+```
+
+### AGENT_DIGEST_PATTERNS
+
+Maps each agent name to an array of digest title patterns it can produce.
+
+```typescript
+export const AGENT_DIGEST_PATTERNS: Record<string, string[]>;
+```
+
+**Values:**
+
+```typescript
+{
+  "Inbox Manager": ["Email Triage"],
+  "Personal Ops Manager": ["Personal Triage"],
+  "GitHub Insyncerator": ["GitHub Sync"],
+  "Client Repo Auditor": ["Client Repo Audit"],
+  "Docs Librarian": ["Docs Quick Scan", "Docs Cleanup Report"],
+  "VEP Weekly Reporter": ["VEP Weekly Activity Report"],
+  "Home & Life Watcher": ["Home & Life Weekly Digest"],
+  "Template Freshness Watcher": ["Setup Template Freshness Report"],
+  "Time Log Auditor": ["Time Log Audit"],
+  "Client Health Scorecard": ["Client Health Scorecard"],
+  "Morning Briefing": ["Morning Briefing"]
+}
+```
+
+<Note>
+Agents with multiple patterns (like Docs Librarian) may produce different digest types depending on the operation mode.
+</Note>
+
+### AGENT_TARGET_DB
+
+Maps each agent to its target Notion database.
+
+```typescript
+export const AGENT_TARGET_DB: Record<string, TargetDatabase>;
+```
+
+**Values:**
+
+```typescript
+{
+  "Inbox Manager": "docs",
+  "Personal Ops Manager": "home_docs",
+  "GitHub Insyncerator": "docs",
+  "Client Repo Auditor": "docs",
+  "Docs Librarian": "docs",
+  "VEP Weekly Reporter": "docs",
+  "Home & Life Watcher": "home_docs",
+  "Template Freshness Watcher": "docs",
+  "Time Log Auditor": "docs",
+  "Client Health Scorecard": "docs",
+  "Morning Briefing": "docs"
+}
+```
+
+<Note>
+Only **Personal Ops Manager** and **Home & Life Watcher** write to `home_docs`. All other agents write to `docs`.
+</Note>
+
+## Functions
+
+### isValidAgentName
+
+Checks if a given name is a recognized agent.
+
+```typescript
+function isValidAgentName(name: string): boolean
+```
+
+**Parameters:**
+- `name` - Agent name to validate
+
+**Returns:**
+- `true` if the name exists in `VALID_AGENT_NAMES`
+- `false` otherwise
+
+**Example:**
+
+```typescript
+import { isValidAgentName } from "./agent-config.js";
+
+isValidAgentName("Inbox Manager"); // true
+isValidAgentName("Unknown Agent"); // false
+```
+
+### getDefaultDigestType
+
+Returns the default (first) digest pattern for an agent.
+
+```typescript
+function getDefaultDigestType(agentName: string): string
+```
+
+**Parameters:**
+- `agentName` - Agent name (should be valid)
+
+**Returns:**
+- First digest pattern from `AGENT_DIGEST_PATTERNS`
+- Returns the agent name itself if no patterns are configured
+
+**Example:**
+
+```typescript
+import { getDefaultDigestType } from "./agent-config.js";
+
+getDefaultDigestType("Inbox Manager"); // "Email Triage"
+getDefaultDigestType("Docs Librarian"); // "Docs Quick Scan"
+getDefaultDigestType("GitHub Insyncerator"); // "GitHub Sync"
+```
+
+<Note>
+This function is used by `write-agent-digest` to generate page titles. The first pattern in the array is considered the primary/default digest type for each agent.
+</Note>
+
+## Usage Examples
+
+### Validating Agent Names
+
+```typescript
+import { isValidAgentName, VALID_AGENT_NAMES } from "./agent-config.js";
+
+function validateInput(agentName: string): void {
+  if (!isValidAgentName(agentName)) {
+    throw new Error(
+      `Invalid agent_name: "${agentName}". Must be one of: ${VALID_AGENT_NAMES.join(", ")}`
+    );
+  }
+}
+```
+
+### Getting Target Database
+
+```typescript
+import { AGENT_TARGET_DB } from "./agent-config.js";
+import type { TargetDatabase } from "./types.js";
+
+function getTargetDatabase(agentName: string): TargetDatabase {
+  const db = AGENT_TARGET_DB[agentName];
+  if (!db) {
+    throw new Error(`No target database configured for ${agentName}`);
+  }
+  return db;
+}
+```
+
+### Finding Digest Pages
+
+```typescript
+import { AGENT_DIGEST_PATTERNS } from "./agent-config.js";
+
+function buildTitleFilters(agentName: string) {
+  const patterns = AGENT_DIGEST_PATTERNS[agentName] ?? [];
+  
+  // Create Notion filter for any matching digest pattern
+  return {
+    or: patterns.map(pattern => ({
+      property: "Name",
+      title: { contains: pattern }
+    }))
+  };
+}
+```
+
+### Building Page Titles
+
+```typescript
+import { getDefaultDigestType } from "./agent-config.js";
+
+function buildDigestTitle(agentName: string, emoji: string, timestamp: string): string {
+  const digestType = getDefaultDigestType(agentName);
+  return `${emoji} ${digestType} — ${timestamp}`;
+}
+
+// Example:
+buildDigestTitle("Inbox Manager", "📧", "2026-03-04");
+// Returns: "📧 Email Triage — 2026-03-04"
+```
+
+## Adding New Agents
+
+To add a new agent to the system:
+
+1. Add the agent name and digest pattern(s) to `AGENT_DIGEST_PATTERNS`
+2. Add the target database to `AGENT_TARGET_DB`
+3. `VALID_AGENT_NAMES` is automatically derived from the patterns object
+
+```typescript
+export const AGENT_DIGEST_PATTERNS: Record<string, string[]> = {
+  // ... existing agents ...
+  "New Agent Name": ["New Digest Pattern"],
+};
+
+export const AGENT_TARGET_DB: Record<string, TargetDatabase> = {
+  // ... existing agents ...
+  "New Agent Name": "docs", // or "home_docs"
+};
+```
+
+## Related
+
+- [Types](/api/types) - Core type definitions including `TargetDatabase`
+- [Status Parser](/api/status-parser) - Parsing digest page content
+- [write-agent-digest](/api/write-agent-digest) - Creating digest pages
+- [check-upstream-status](/api/check-upstream-status) - Checking agent status
