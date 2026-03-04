@@ -1,0 +1,191 @@
+---
+title: Notion Client
+description: Shared Notion SDK client and database ID accessors
+icon: database
+---
+
+# Notion Client
+
+The `notion-client` module provides a shared Notion SDK client instance and accessor functions for database IDs. All configuration comes from environment variables.
+
+## Overview
+
+This module centralizes Notion API authentication and database ID management. Workers and shared modules import these functions rather than directly accessing environment variables or creating client instances.
+
+## Functions
+
+### getNotionClient
+
+Returns a cached Notion SDK client instance authenticated with `NOTION_TOKEN`.
+
+```typescript
+function getNotionClient(): Client
+```
+
+**Returns:** `Client` - Authenticated Notion SDK client
+
+**Throws:** `Error` - If `NOTION_TOKEN` environment variable is not set
+
+**Example:**
+```typescript
+import { getNotionClient } from "../shared/notion-client.js";
+
+const notion = getNotionClient();
+const response = await notion.databases.query({
+  database_id: "...",
+});
+```
+
+<Note>
+The client is cached after the first call. Subsequent calls return the same instance.
+</Note>
+
+### getDocsDatabaseId
+
+Returns the Docs database ID from environment variables.
+
+```typescript
+function getDocsDatabaseId(): string
+```
+
+**Returns:** `string` - The Docs database ID (32-character hex string)
+
+**Throws:** `Error` - If `DOCS_DATABASE_ID` environment variable is not set
+
+**Example:**
+```typescript
+import { getDocsDatabaseId } from "../shared/notion-client.js";
+
+const dbId = getDocsDatabaseId();
+// Use with write-agent-digest when target_database is "docs"
+```
+
+### getHomeDocsDatabaseId
+
+Returns the Home Docs database ID from environment variables.
+
+```typescript
+function getHomeDocsDatabaseId(): string
+```
+
+**Returns:** `string` - The Home Docs database ID (32-character hex string)
+
+**Throws:** `Error` - If `HOME_DOCS_DATABASE_ID` environment variable is not set
+
+**Example:**
+```typescript
+import { getHomeDocsDatabaseId } from "../shared/notion-client.js";
+
+const dbId = getHomeDocsDatabaseId();
+// Use with write-agent-digest when target_database is "home_docs"
+```
+
+### getTasksDatabaseId
+
+Returns the Tasks database ID from environment variables.
+
+```typescript
+function getTasksDatabaseId(): string
+```
+
+**Returns:** `string` - The Tasks database ID (32-character hex string)
+
+**Throws:** `Error` - If `TASKS_DATABASE_ID` environment variable is not set
+
+**Example:**
+```typescript
+import { getTasksDatabaseId } from "../shared/notion-client.js";
+
+const tasksDbId = getTasksDatabaseId();
+// Used by create-handoff-marker when create_task is true
+```
+
+## Environment Variables
+
+All functions depend on these environment variables being set:
+
+| Variable | Purpose | Format |
+|----------|---------|--------|
+| `NOTION_TOKEN` | Notion integration token | Secret string (starts with `secret_`) |
+| `DOCS_DATABASE_ID` | Docs database ID | 32-character hex string (no dashes) |
+| `HOME_DOCS_DATABASE_ID` | Home Docs database ID | 32-character hex string (no dashes) |
+| `TASKS_DATABASE_ID` | Tasks database ID | 32-character hex string (no dashes) |
+
+See the [Setup Guide](/guides/setup) for instructions on obtaining and configuring these values.
+
+## Implementation Details
+
+### Client Caching
+
+The Notion client is cached in a module-level variable after the first call to `getNotionClient()`. This prevents creating multiple client instances and improves performance.
+
+### Error Handling
+
+All functions throw descriptive errors if required environment variables are missing. Workers should catch these errors during startup or validation phases.
+
+```typescript
+try {
+  const notion = getNotionClient();
+  const dbId = getDocsDatabaseId();
+  // Proceed with Notion operations
+} catch (error) {
+  console.error("Configuration error:", error.message);
+  // Return { success: false, error: error.message }
+}
+```
+
+### Database ID Format
+
+Notion database IDs are 32-character hexadecimal strings without dashes:
+- ✅ Correct: `abc123def456789...` (32 chars)
+- ❌ Wrong: `abc-123-def-456-789...` (with dashes)
+
+When copying database IDs from Notion URLs, remove any dashes before setting environment variables.
+
+## Usage in Workers
+
+All three workers use these functions:
+
+**write-agent-digest:**
+```typescript
+const dbId = input.target_database === "home_docs" 
+  ? getHomeDocsDatabaseId() 
+  : getDocsDatabaseId();
+
+const page = await notion.pages.create({
+  parent: { database_id: dbId },
+  // ...
+});
+```
+
+**check-upstream-status:**
+```typescript
+const targetDb = AGENT_TARGET_DB[input.agent_name] ?? "docs";
+const dbId = targetDb === "home_docs" 
+  ? getHomeDocsDatabaseId() 
+  : getDocsDatabaseId();
+
+const response = await notion.databases.query({
+  database_id: dbId,
+  // ...
+});
+```
+
+**create-handoff-marker:**
+```typescript
+if (input.create_task) {
+  const tasksDbId = getTasksDatabaseId();
+  const taskPage = await notion.pages.create({
+    parent: { database_id: tasksDbId },
+    // ...
+  });
+}
+```
+
+## See Also
+
+- [Types](/api/types) - Core type definitions including `TargetDatabase`
+- [Setup Guide](/guides/setup) - Environment variable configuration
+- [write-agent-digest](/api/write-agent-digest) - Uses database IDs for page creation
+- [check-upstream-status](/api/check-upstream-status) - Uses database IDs for queries
+- [create-handoff-marker](/api/create-handoff-marker) - Uses Tasks database ID

@@ -70,6 +70,7 @@
             "group": "Shared Modules",
             "pages": [
               "api/types",
+              "api/notion-client",
               "api/agent-config",
               "api/status-parser",
               "api/date-utils",
